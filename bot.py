@@ -331,12 +331,11 @@ async def on_message(message: discord.Message):
 async def fetch_quote():
     async with aiohttp.ClientSession() as session:
         try:
-            # zenquotes.io/api/quotes fetches 50 quotes at once to ensure random picks from past/current quotes
             async with session.get("https://zenquotes.io/api/quotes") as response:
                 if response.status == 200:
                     data = await response.json()
                     selected = random.choice(data)
-                    return f'"{selected["q"]}" — **{selected["a"]}**'
+                    return f'"{selected["q"]}"\n— {selected["a"]}'
                 return "Could not fetch a quote right now."
         except Exception as e:
             print(f"Error fetching quote: {e}")
@@ -348,14 +347,7 @@ async def auto_post_quote():
     channel = bot.get_channel(DAILY_QUOTE_CHANNEL_ID)
     if channel:
         quote_text = await fetch_quote()
-        embed = discord.Embed(
-            title="🌟 Quote of the Day",
-            description=quote_text,
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text="Automated Daily Inspiration")
-        await channel.send(embed=embed)
+        await channel.send(quote_text)
 
 
 @auto_post_quote.before_loop
