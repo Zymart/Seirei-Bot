@@ -1,36 +1,43 @@
-import json
 import os
+import json
 import random
 import threading
 from collections import Counter
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# --- RENDER KEEP-ALIVE SERVER ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+# ==========================================
+# 1. KEEP-ALIVE WEB SERVER (Fixes UptimeRobot 501 Error)
+# ==========================================
+class WebServerHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        """Responds to UptimeRobot HEAD requests with 200 OK."""
         self.send_response(200)
-        self.send_header('Content-type', 'text/html')
         self.end_headers()
-        self.wfile.write(b"Bot is alive!")
 
-    def log_message(self, format, *args):
-        # Silence HTTP logs to keep console output clean
-        return
+    def do_GET(self):
+        """Responds to UptimeRobot GET requests or web browsers."""
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"Bot is online and running!")
 
-def run_health_check_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+def start_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), WebServerHandler)
     server.serve_forever()
 
-# Start background thread for Render port binding
-threading.Thread(target=run_health_check_server, daemon=True).start()
+# Run the web server in a background thread
+threading.Thread(target=start_web_server, daemon=True).start()
 
 
-# --- BOT CONFIGURATION ---
+# ==========================================
+# 2. DISCORD BOT & INTENTS SETUP
+# ==========================================
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -38,10 +45,8 @@ intents.dm_messages = True
 intents.members = True       # Required to track member joins
 intents.invites = True       # Required to track invites
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-# Load TOKEN from Environment Variables
-TOKEN = os.environ.get("DISCORD_TOKEN")
+# Disable default help command
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Channel IDs
 WELCOME_CHANNEL_ID = 1547265722525290536       # Welcome Channel ID
@@ -320,7 +325,38 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+# --- QUOTE SYSTEM HELPER ---
+
+async def fetch_quote():
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get("https://zenquotes.io/api/random") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    quote = data[0]["q"]
+                    author = data[0]["a"]
+                    return f'"{quote}" — **{author}**'
+                return "Could not fetch a quote right now."
+        except Exception as e:
+            print(f"Error fetching quote: {e}")
+            return "Failed to connect to the quote service."
+
+
 # --- COMMANDS ---
+
+# Prefix quote command: !quote
+@bot.command(name="quote")
+async def quote_prefix(ctx):
+    quote = await fetch_quote()
+    await ctx.send(quote)
+
+
+# Slash quote command: /quote
+@bot.tree.command(name="quote", description="Get a random inspirational quote")
+async def quote_slash(interaction: discord.Interaction):
+    quote = await fetch_quote()
+    await interaction.response.send_message(quote)
+
 
 class InitialConfessionModal(discord.ui.Modal, title="💌 Send Anonymous Confession"):
     message_input = discord.ui.TextInput(
@@ -461,6 +497,8 @@ async def roll(interaction: discord.Interaction, times: int = 1):
     )
 
 
+# --- ON_READY EVENT ---
+
 @bot.event
 async def on_ready():
     await bot.tree.sync()
@@ -475,7 +513,12 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
-if __name__ == "__main__":
-    if not TOKEN:
-        raise ValueError("No DISCORD_TOKEN found in environment variables!")
+# ==========================================
+# RUN THE BOT
+# ==========================================
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+if not TOKEN:
+    print("Error: DISCORD_TOKEN environment variable is missing!")
+else:
     bot.run(TOKEN)
