@@ -2,7 +2,7 @@ import os
 import json
 import random
 import threading
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -61,6 +61,7 @@ MSG_MAP_FILE = "message_map.json"
 USER_ACTIVE_FILE = "user_active_threads.json"
 COUNTER_FILE = "counter.json"
 WARNINGS_FILE = "warnings.json"
+QUOTE_STATE_FILE = "quote_state.json"
 
 # In-memory invite tracker: {guild_id: {invite_code: uses}}
 invites_cache = {}
@@ -113,6 +114,7 @@ message_map = load_data(MSG_MAP_FILE)
 user_last_thread = load_data(USER_ACTIVE_FILE)
 counter_data = load_data(COUNTER_FILE)
 warnings_data = load_data(WARNINGS_FILE)
+quote_state = load_data(QUOTE_STATE_FILE)
 
 
 def get_next_confession_number():
@@ -332,7 +334,7 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
-# --- QUOTE HELPER & 24-HOUR AUTOMATION TASK ---
+# --- QUOTE HELPER & PERSISTENT 24-HOUR AUTOMATION TASK ---
 
 async def fetch_quote():
     async with aiohttp.ClientSession() as session:
@@ -354,11 +356,32 @@ async def auto_post_quote():
     if channel:
         quote_text = await fetch_quote()
         await channel.send(quote_text)
+        
+        # Save timestamp of when the quote was posted
+        quote_state["last_posted"] = datetime.now(timezone.utc).isoformat()
+        save_data(quote_state, QUOTE_STATE_FILE)
 
 
 @auto_post_quote.before_loop
 async def before_auto_post_quote():
     await bot.wait_until_ready()
+
+    # Check if a quote was sent in the last 24 hours
+    last_posted_str = quote_state.get("last_posted")
+    if last_posted_str:
+        try:
+            last_posted = datetime.fromisoformat(last_posted_str)
+            now = datetime.now(timezone.utc)
+            elapsed = (now - last_posted).total_seconds()
+            twenty_four_hours = 24 * 3600
+
+            # If 24 hours haven't passed yet, wait out the remaining duration
+            if elapsed < twenty_four_hours:
+                remaining_seconds = twenty_four_hours - elapsed
+                print(f"Quote state restored. Next automated quote in {int(remaining_seconds / 3600)}h {int((remaining_seconds % 3600) / 60)}m.")
+                await discord.utils.sleep_until(now + timedelta(seconds=remaining_seconds))
+        except Exception as e:
+            print(f"Error restoring quote state timestamp: {e}")
 
 
 # --- COMMANDS ---
@@ -378,7 +401,7 @@ async def quote_slash(interaction: discord.Interaction):
 
 
 # ==========================================
-# 3. MODERATION COMMANDS (/warn, /mute, /ban)
+# 3. MODERATION COMMANDS (/warn, /warnings, /clearwarn, /mute, /unmute, /ban)
 # ==========================================
 
 @bot.tree.command(name="warn", description="Warn a member and log it")
@@ -422,7 +445,6 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
 
     # Send Log to Moderation Log Channel
     log_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
-    action_taken = "Warning Logged"
 
     if log_channel:
         log_embed = discord.Embed(
@@ -443,14 +465,12 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     if total_warns >= 6:
         try:
             await member.ban(reason=f"Reached 6 warnings. Last reason: {reason}")
-            action_taken = "Automatic Ban (6/6 Warnings)"
             escalation_text = "\n⛔ **Member was automatically BANNED for reaching 6 warnings.**"
         except discord.Forbidden:
             escalation_text = "\n⚠️ *Failed to ban member due to missing permissions.*"
     elif total_warns == 3:
         try:
             await member.timeout(timedelta(hours=1), reason=f"Reached 3 warnings. Last reason: {reason}")
-            action_taken = "Automatic 1-Hour Mute (3 Warnings)"
             escalation_text = "\n🔇 **Member was automatically MUTED for 1 hour (3 warnings reached).**"
         except discord.Forbidden:
             escalation_text = "\n⚠️ *Failed to mute member due to missing permissions.*"
@@ -491,6 +511,42 @@ async def warnings(interaction: discord.Interaction, member: discord.Member):
         )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="clearwarn", description="Clear all warnings for a member")
+@app_commands.describe(member="The member whose warnings you want to clear")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def clearwarn(interaction: discord.Interaction, member: discord.Member):
+    user_id = str(member.id)
+
+    if user_id not in warnings_data or not warnings_data[user_id]:
+        await interaction.response.send_message(f"ℹ️ **{member.display_name}** already has 0 active warnings.", ephemeral=True)
+        return
+
+    cleared_count = len(warnings_data[user_id])
+    warnings_data[user_id] = []
+    save_data(warnings_data, WARNINGS_FILE)
+
+    # Log Clear Warn to Mod Channel
+    log_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if log_channel:
+        log_embed = discord.Embed(
+            title="🧹 Warnings Cleared",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.add_field(name="👤 User", value=f"{member.mention} (`{member.id}`)", inline=True)
+        log_embed.add_field(name="🛡️ Moderator", value=f"{interaction.user.mention}", inline=True)
+        log_embed.add_field(name="🗑️ Cleared Count", value=f"`{cleared_count}` warning(s)", inline=True)
+        await log_channel.send(embed=log_embed)
+
+    await interaction.response.send_message(f"🧹 Cleared **{cleared_count}** warning(s) for **{member.display_name}**.", ephemeral=True)
+
+
+@clearwarn.error
+async def clearwarn_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You lack permissions to use `/clearwarn`.", ephemeral=True)
 
 
 @bot.tree.command(name="mute", description="Mute (timeout) a member")
