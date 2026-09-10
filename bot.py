@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # ==========================================
 # 1. KEEP-ALIVE WEB SERVER (Fixes UptimeRobot 501 Error)
@@ -53,6 +53,7 @@ WELCOME_CHANNEL_ID = 1547265722525290536       # Welcome Channel ID
 STAFF_CHANNEL_ID = 1543969779591815333          # Initial Confessions Audit Log
 PUBLIC_CHANNEL_ID = 1547265722525290536         # Public Anonymous Log
 STAFF_REPLIES_CHANNEL_ID = 1544215871885541386     # Staff Replies Log ONLY
+DAILY_QUOTE_CHANNEL_ID = 1547444666700537956    # 24-Hour Quote Target Channel
 
 MSG_MAP_FILE = "message_map.json"
 USER_ACTIVE_FILE = "user_active_threads.json"
@@ -325,21 +326,41 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
-# --- QUOTE SYSTEM HELPER ---
+# --- QUOTE HELPER & 24-HOUR AUTOMATION TASK ---
 
 async def fetch_quote():
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get("https://zenquotes.io/api/random") as response:
+            # zenquotes.io/api/quotes fetches 50 quotes at once to ensure random picks from past/current quotes
+            async with session.get("https://zenquotes.io/api/quotes") as response:
                 if response.status == 200:
                     data = await response.json()
-                    quote = data[0]["q"]
-                    author = data[0]["a"]
-                    return f'"{quote}" — **{author}**'
+                    selected = random.choice(data)
+                    return f'"{selected["q"]}" — **{selected["a"]}**'
                 return "Could not fetch a quote right now."
         except Exception as e:
             print(f"Error fetching quote: {e}")
             return "Failed to connect to the quote service."
+
+
+@tasks.loop(hours=24)
+async def auto_post_quote():
+    channel = bot.get_channel(DAILY_QUOTE_CHANNEL_ID)
+    if channel:
+        quote_text = await fetch_quote()
+        embed = discord.Embed(
+            title="🌟 Quote of the Day",
+            description=quote_text,
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text="Automated Daily Inspiration")
+        await channel.send(embed=embed)
+
+
+@auto_post_quote.before_loop
+async def before_auto_post_quote():
+    await bot.wait_until_ready()
 
 
 # --- COMMANDS ---
@@ -503,6 +524,9 @@ async def roll(interaction: discord.Interaction, times: int = 1):
 async def on_ready():
     await bot.tree.sync()
     
+    if not auto_post_quote.is_running():
+        auto_post_quote.start()
+
     for guild in bot.guilds:
         try:
             invites = await guild.invites()
