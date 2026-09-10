@@ -2,6 +2,7 @@ import os
 import json
 import random
 import threading
+from datetime import timedelta
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -42,7 +43,7 @@ intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
 intents.dm_messages = True
-intents.members = True       # Required to track member joins
+intents.members = True       # Required to track member joins and moderations
 intents.invites = True       # Required to track invites
 
 # Disable default help command
@@ -54,10 +55,12 @@ STAFF_CHANNEL_ID = 1543969779591815333          # Initial Confessions Audit Log
 PUBLIC_CHANNEL_ID = 1547265722525290536         # Public Anonymous Log
 STAFF_REPLIES_CHANNEL_ID = 1544215871885541386     # Staff Replies Log ONLY
 DAILY_QUOTE_CHANNEL_ID = 1547444666700537956    # 24-Hour Quote Target Channel
+MOD_LOG_CHANNEL_ID = 1544478399198928990        # Moderation Log Channel ID
 
 MSG_MAP_FILE = "message_map.json"
 USER_ACTIVE_FILE = "user_active_threads.json"
 COUNTER_FILE = "counter.json"
+WARNINGS_FILE = "warnings.json"
 
 # In-memory invite tracker: {guild_id: {invite_code: uses}}
 invites_cache = {}
@@ -98,7 +101,9 @@ def load_data(file_path):
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             return json.load(f)
-    return {} if "json" in file_path and file_path != COUNTER_FILE else {"count": 0}
+    if file_path == COUNTER_FILE:
+        return {"count": 0}
+    return {}
 
 def save_data(data, file_path):
     with open(file_path, "w") as f:
@@ -107,6 +112,7 @@ def save_data(data, file_path):
 message_map = load_data(MSG_MAP_FILE)
 user_last_thread = load_data(USER_ACTIVE_FILE)
 counter_data = load_data(COUNTER_FILE)
+warnings_data = load_data(WARNINGS_FILE)
 
 
 def get_next_confession_number():
@@ -370,6 +376,196 @@ async def quote_slash(interaction: discord.Interaction):
     quote = await fetch_quote()
     await interaction.response.send_message(quote)
 
+
+# ==========================================
+# 3. MODERATION COMMANDS (/warn, /mute, /ban)
+# ==========================================
+
+@bot.tree.command(name="warn", description="Warn a member and log it")
+@app_commands.describe(member="The member to warn", reason="Reason for the warning")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    if member.top_role >= interaction.user.top_role and interaction.guild.owner != interaction.user:
+        await interaction.response.send_message("❌ You cannot warn this member as their role is equal to or higher than yours.", ephemeral=True)
+        return
+
+    if member.bot:
+        await interaction.response.send_message("❌ You cannot warn a bot.", ephemeral=True)
+        return
+
+    user_id = str(member.id)
+    if user_id not in warnings_data:
+        warnings_data[user_id] = []
+
+    warnings_data[user_id].append({
+        "reason": reason,
+        "moderator": interaction.user.name,
+        "timestamp": str(discord.utils.utcnow())
+    })
+    save_data(warnings_data, WARNINGS_FILE)
+
+    total_warns = len(warnings_data[user_id])
+
+    # Direct Message Warning to Member
+    warn_dm_embed = discord.Embed(
+        title="⚠️ You Have Received a Warning",
+        description=f"You received a warning in **{interaction.guild.name}**.\n\n**Reason:** {reason}\n**Total Warnings:** {total_warns}/6",
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
+    )
+    
+    dm_sent = True
+    try:
+        await member.send(embed=warn_dm_embed)
+    except discord.Forbidden:
+        dm_sent = False
+
+    # Send Log to Moderation Log Channel
+    log_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    action_taken = "Warning Logged"
+
+    if log_channel:
+        log_embed = discord.Embed(
+            title=f"⚠️ Member Warned | Warning #{total_warns}",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.add_field(name="👤 Target User", value=f"{member.mention} (`{member.id}`)", inline=True)
+        log_embed.add_field(name="🛡️ Moderator", value=f"{interaction.user.mention}", inline=True)
+        log_embed.add_field(name="📊 Active Warnings", value=f"`{total_warns}/6`", inline=True)
+        log_embed.add_field(name="📝 Reason", value=f"```\n{reason}\n```", inline=False)
+        log_embed.add_field(name="📬 DM Status", value="🟢 `Delivered`" if dm_sent else "🔴 `Failed (DMs Closed)`", inline=False)
+        log_embed.set_thumbnail(url=member.display_avatar.url)
+        await log_channel.send(embed=log_embed)
+
+    # Automatic Escalation Actions
+    escalation_text = ""
+    if total_warns >= 6:
+        try:
+            await member.ban(reason=f"Reached 6 warnings. Last reason: {reason}")
+            action_taken = "Automatic Ban (6/6 Warnings)"
+            escalation_text = "\n⛔ **Member was automatically BANNED for reaching 6 warnings.**"
+        except discord.Forbidden:
+            escalation_text = "\n⚠️ *Failed to ban member due to missing permissions.*"
+    elif total_warns == 3:
+        try:
+            await member.timeout(timedelta(hours=1), reason=f"Reached 3 warnings. Last reason: {reason}")
+            action_taken = "Automatic 1-Hour Mute (3 Warnings)"
+            escalation_text = "\n🔇 **Member was automatically MUTED for 1 hour (3 warnings reached).**"
+        except discord.Forbidden:
+            escalation_text = "\n⚠️ *Failed to mute member due to missing permissions.*"
+
+    await interaction.response.send_message(
+        f"✅ **{member.display_name}** has been warned ({total_warns}/6 warnings).{escalation_text}",
+        ephemeral=True
+    )
+
+
+@warn.error
+async def warn_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You lack permissions to use `/warn`.", ephemeral=True)
+
+
+@bot.tree.command(name="warnings", description="Check warnings for a member")
+@app_commands.describe(member="The member to check")
+async def warnings(interaction: discord.Interaction, member: discord.Member):
+    user_id = str(member.id)
+    user_warns = warnings_data.get(user_id, [])
+
+    if not user_warns:
+        await interaction.response.send_message(f"✅ **{member.display_name}** has clean records (0 warnings).", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title=f"📋 Warnings for {member.display_name} ({len(user_warns)}/6)",
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    
+    for idx, warn_entry in enumerate(user_warns, start=1):
+        embed.add_field(
+            name=f"Warning #{idx}",
+            value=f"**Reason:** {warn_entry['reason']}\n**Moderator:** {warn_entry['moderator']}",
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="mute", description="Mute (timeout) a member")
+@app_commands.describe(member="The member to mute", duration_minutes="Mute duration in minutes", reason="Reason for mute")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def mute(interaction: discord.Interaction, member: discord.Member, duration_minutes: int, reason: str = "No reason provided"):
+    if member.top_role >= interaction.user.top_role and interaction.guild.owner != interaction.user:
+        await interaction.response.send_message("❌ You cannot mute this member.", ephemeral=True)
+        return
+
+    try:
+        await member.timeout(timedelta(minutes=duration_minutes), reason=reason)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Bot lacks permission to mute this member.", ephemeral=True)
+        return
+
+    log_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if log_channel:
+        log_embed = discord.Embed(
+            title="🔇 Member Muted",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.add_field(name="👤 User", value=f"{member.mention}", inline=True)
+        log_embed.add_field(name="🛡️ Moderator", value=f"{interaction.user.mention}", inline=True)
+        log_embed.add_field(name="⏳ Duration", value=f"{duration_minutes} minutes", inline=True)
+        log_embed.add_field(name="📝 Reason", value=f"```\n{reason}\n```", inline=False)
+        await log_channel.send(embed=log_embed)
+
+    await interaction.response.send_message(f"🔇 **{member.display_name}** has been muted for {duration_minutes} minutes.", ephemeral=True)
+
+
+@bot.tree.command(name="unmute", description="Unmute a member")
+@app_commands.describe(member="The member to unmute")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def unmute(interaction: discord.Interaction, member: discord.Member):
+    try:
+        await member.timeout(None, reason="Unmuted by moderator")
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Bot lacks permission to unmute this member.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f"🔊 **{member.display_name}** has been unmuted.", ephemeral=True)
+
+
+@bot.tree.command(name="ban", description="Ban a member from the server")
+@app_commands.describe(member="The member to ban", reason="Reason for ban")
+@app_commands.checks.has_permissions(ban_members=True)
+async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    if member.top_role >= interaction.user.top_role and interaction.guild.owner != interaction.user:
+        await interaction.response.send_message("❌ You cannot ban this member.", ephemeral=True)
+        return
+
+    try:
+        await member.ban(reason=reason)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Bot lacks permission to ban this member.", ephemeral=True)
+        return
+
+    log_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if log_channel:
+        log_embed = discord.Embed(
+            title="⛔ Member Banned",
+            color=discord.Color.dark_red(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.add_field(name="👤 User", value=f"{member.mention} (`{member.id}`)", inline=True)
+        log_embed.add_field(name="🛡️ Moderator", value=f"{interaction.user.mention}", inline=True)
+        log_embed.add_field(name="📝 Reason", value=f"```\n{reason}\n```", inline=False)
+        await log_channel.send(embed=log_embed)
+
+    await interaction.response.send_message(f"⛔ **{member.display_name}** has been banned.", ephemeral=True)
+
+
+# --- CONFESSIONS MODALS & VIEWS ---
 
 class InitialConfessionModal(discord.ui.Modal, title="💌 Send Anonymous Confession"):
     message_input = discord.ui.TextInput(
