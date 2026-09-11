@@ -50,7 +50,7 @@ intents.invites = True       # Required to track invites
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Channel IDs
-WELCOME_CHANNEL_ID = 1547265722525290536       # Welcome Channel ID
+WELCOME_CHANNEL_ID = 1544178863280758855       # Updated Join / Welcome Channel ID
 STAFF_CHANNEL_ID = 1543969779591815333          # Initial Confessions Audit Log
 PUBLIC_CHANNEL_ID = 1547265722525290536         # Public Anonymous Log
 STAFF_REPLIES_CHANNEL_ID = 1544215871885541386     # Staff Replies Log ONLY
