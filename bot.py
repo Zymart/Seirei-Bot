@@ -52,10 +52,10 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # Channel IDs
 WELCOME_CHANNEL_ID = 1544178863280758855       # Join / Welcome Channel ID
 STAFF_CHANNEL_ID = 1543969779591815333          # Unused initial channel
-PUBLIC_CHANNEL_ID = 1547265722525290536         # Public Anonymous Log
-STAFF_REPLIES_CHANNEL_ID = 1544215871885541386  # All Staff Logs & Replies
+PUBLIC_CHANNEL_ID = 1547265722525290536         # Public Anonymous Log (Visible to ALL, Read-Only)
+STAFF_REPLIES_CHANNEL_ID = 1544215871885541386  # All Staff Logs & Replies (Admins Only, Read-Only)
 DAILY_QUOTE_CHANNEL_ID = 1547444666700537956    # 24-Hour Quote Target Channel
-MOD_LOG_CHANNEL_ID = 1544478399198928990        # Moderation Log Channel ID
+MOD_LOG_CHANNEL_ID = 1544478399198928990        # Moderation Log Channel ID (Admins Only, Read-Only)
 
 MSG_MAP_FILE = "message_map.json"
 USER_ACTIVE_FILE = "user_active_threads.json"
@@ -773,12 +773,58 @@ async def roll(interaction: discord.Interaction, times: int = 1):
 
 async def lockdown_log_channels():
     """
-    Configures log channels so Admins can VIEW, but ONLY the Bot and Owner can SEND messages.
-    Completely hides the channel from standard members (@everyone).
+    Configures channel permissions based on role visibility:
+    - PUBLIC_CHANNEL_ID: Visible to EVERYONE, but READ-ONLY (no messaging/reactions).
+    - STAFF_REPLIES_CHANNEL_ID & MOD_LOG_CHANNEL_ID: Visible ONLY to Admins, READ-ONLY for Admins. Hidden from @everyone.
+    - OWNER & BOT: Full view & send permissions everywhere.
     """
-    log_channel_ids = [STAFF_REPLIES_CHANNEL_ID, PUBLIC_CHANNEL_ID, MOD_LOG_CHANNEL_ID]
+    staff_only_channels = [STAFF_REPLIES_CHANNEL_ID, MOD_LOG_CHANNEL_ID]
     
-    for channel_id in log_channel_ids:
+    # 1. SETUP PUBLIC CONFESSION CHANNEL (EVERYONE CAN VIEW, READ-ONLY)
+    public_channel = bot.get_channel(PUBLIC_CHANNEL_ID)
+    if public_channel and isinstance(public_channel, discord.TextChannel):
+        guild = public_channel.guild
+        owner = guild.owner
+
+        try:
+            # Everyone can VIEW, but NO ONE can send messages
+            await public_channel.set_permissions(
+                guild.default_role,
+                view_channel=True,         # Visible to everyone
+                send_messages=False,        # Read-only
+                send_messages_in_threads=False,
+                create_public_threads=False,
+                create_private_threads=False,
+                add_reactions=False
+            )
+
+            # Bot full permissions
+            bot_member = guild.get_member(bot.user.id)
+            if bot_member:
+                await public_channel.set_permissions(
+                    bot_member,
+                    view_channel=True,
+                    send_messages=True,
+                    embed_links=True,
+                    attach_files=True
+                )
+
+            # Owner full permissions
+            if owner:
+                await public_channel.set_permissions(
+                    owner,
+                    view_channel=True,
+                    send_messages=True,
+                    embed_links=True,
+                    attach_files=True
+                )
+
+            print(f"✅ Updated PUBLIC channel permissions for #{public_channel.name}")
+        except Exception as e:
+            print(f"Error locking public channel: {e}")
+
+    # 2. SETUP STAFF/MOD LOG CHANNELS (ADMINS ONLY, READ-ONLY)
+    for channel_id in staff_only_channels:
         channel = bot.get_channel(channel_id)
         if not channel or not isinstance(channel, discord.TextChannel):
             continue
@@ -787,7 +833,7 @@ async def lockdown_log_channels():
         owner = guild.owner
 
         try:
-            # 1. Hide channel & deny send messages for @everyone completely
+            # Completely HIDE from @everyone
             await channel.set_permissions(
                 guild.default_role,
                 view_channel=False,
@@ -798,20 +844,20 @@ async def lockdown_log_channels():
                 add_reactions=False
             )
 
-            # 2. Grant VIEW permission to Administrator roles while denying SEND
+            # Allow Admins to VIEW, but DENY typing/sending
             for role in guild.roles:
                 if role.permissions.administrator:
                     await channel.set_permissions(
                         role,
                         view_channel=True,        # Admins can read
-                        send_messages=False,      # Admins CANNOT send messages
+                        send_messages=False,      # Admins cannot send messages
                         send_messages_in_threads=False,
                         create_public_threads=False,
                         create_private_threads=False,
                         add_reactions=False
                     )
 
-            # 3. Grant full View + Send access ONLY to the bot
+            # Bot full permissions
             bot_member = guild.get_member(bot.user.id)
             if bot_member:
                 await channel.set_permissions(
@@ -822,7 +868,7 @@ async def lockdown_log_channels():
                     attach_files=True
                 )
 
-            # 4. Grant full View + Send access ONLY to the Server Owner
+            # Owner full permissions
             if owner:
                 await channel.set_permissions(
                     owner,
@@ -832,11 +878,9 @@ async def lockdown_log_channels():
                     attach_files=True
                 )
 
-            print(f"Updated permissions for #{channel.name} ({channel.id})")
-        except discord.Forbidden:
-            print(f"⚠️ Failed to update permissions for channel {channel.id} due to missing 'Manage Roles/Channels' permission.")
+            print(f"🔒 Updated STAFF channel permissions for #{channel.name}")
         except Exception as e:
-            print(f"Error locking down channel {channel.id}: {e}")
+            print(f"Error locking staff channel {channel.id}: {e}")
 
 
 # --- ON_READY EVENT ---
