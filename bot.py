@@ -178,13 +178,14 @@ async def on_invite_delete(invite: discord.Invite):
 
 # --- LOGGING FUNCTIONS ---
 
-async def send_staff_initial_log(sender: discord.User, target: discord.User, message: str, dm_sent: bool, conf_num: int):
+async def send_staff_initial_log(sender: discord.User, target: discord.User, message: str, dm_sent: bool, conf_num: int, is_locked: bool = False):
     staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
     if not staff_channel:
         return
 
     log_color = discord.Color.from_rgb(138, 43, 226) if dm_sent else discord.Color.from_rgb(178, 34, 34)
     status_badge = "🟢 `DELIVERED`" if dm_sent else "🔴 `DM FAILED`"
+    lock_status = "🔒 `LOCKED (No Replies)`" if is_locked else "🔓 `UNLOCKED (Replies Allowed)`"
 
     staff_embed = discord.Embed(
         title=f"🔒 Staff Audit Log | Confession (#{conf_num})",
@@ -194,6 +195,7 @@ async def send_staff_initial_log(sender: discord.User, target: discord.User, mes
     staff_embed.add_field(name="👤 Sender", value=f"{sender.mention}\n`@{sender.name}`", inline=True)
     staff_embed.add_field(name="🎯 Recipient", value=f"{target.mention}\n`@{target.name}`", inline=True)
     staff_embed.add_field(name="📡 Status", value=status_badge, inline=True)
+    staff_embed.add_field(name="🔒 Thread Mode", value=lock_status, inline=False)
     staff_embed.add_field(name="💬 Message Content", value=f"```fix\n{message}\n```", inline=False)
     staff_embed.set_thumbnail(url=sender.display_avatar.url)
 
@@ -623,7 +625,7 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
 
 # --- CONFESSIONS MODALS & VIEWS ---
 
-class InitialConfessionModal(discord.ui.Modal, title="💌 Send Anonymous Confession"):
+class InitialConfessionModal(discord.ui.Modal):
     message_input = discord.ui.TextInput(
         label="Your Secret Message",
         style=discord.TextStyle.paragraph,
@@ -632,9 +634,11 @@ class InitialConfessionModal(discord.ui.Modal, title="💌 Send Anonymous Confes
         max_length=1000,
     )
 
-    def __init__(self, target_user: discord.User):
-        super().__init__()
+    def __init__(self, target_user: discord.User, allow_replies: bool = True):
+        # Set dynamic title including user's name
+        super().__init__(title=f"💌 Confessing to {target_user.display_name[:20]}")
         self.target_user = target_user
+        self.allow_replies = allow_replies
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -648,20 +652,31 @@ class InitialConfessionModal(discord.ui.Modal, title="💌 Send Anonymous Confes
             description=f"```\n{confession_text}\n```",
             color=discord.Color.from_rgb(255, 182, 193)
         )
-        recipient_embed.set_footer(text="💡 Click 'Reply' below or send a message directly to respond back!")
+
+        if self.allow_replies:
+            recipient_embed.set_footer(text="💡 Click 'Reply' below or send a message directly to respond back!")
+            view = DMReplyView(partner_id=str(sender.id))
+        else:
+            recipient_embed.set_footer(text="🔒 The sender disabled replies for this confession.")
+            view = None
 
         dm_sent = False
         try:
-            view = DMReplyView(partner_id=str(sender.id))
-            sent_msg = await self.target_user.send(embed=recipient_embed, view=view)
+            if view:
+                sent_msg = await self.target_user.send(embed=recipient_embed, view=view)
+            else:
+                sent_msg = await self.target_user.send(embed=recipient_embed)
+
             dm_sent = True
 
-            message_map[str(sent_msg.id)] = str(sender.id)
-            save_data(message_map, MSG_MAP_FILE)
+            # Save mapping & active session ONLY if replies are allowed
+            if self.allow_replies:
+                message_map[str(sent_msg.id)] = str(sender.id)
+                save_data(message_map, MSG_MAP_FILE)
 
-            user_last_thread[str(sender.id)] = str(self.target_user.id)
-            user_last_thread[str(self.target_user.id)] = str(sender.id)
-            save_data(user_last_thread, USER_ACTIVE_FILE)
+                user_last_thread[str(sender.id)] = str(self.target_user.id)
+                user_last_thread[str(self.target_user.id)] = str(sender.id)
+                save_data(user_last_thread, USER_ACTIVE_FILE)
 
             try:
                 await interaction.followup.send(f"✨ Confession (#{conf_num}) delivered!", ephemeral=True)
@@ -674,39 +689,42 @@ class InitialConfessionModal(discord.ui.Modal, title="💌 Send Anonymous Confes
             except Exception:
                 pass
 
-        await send_staff_initial_log(sender=sender, target=self.target_user, message=confession_text, dm_sent=dm_sent, conf_num=conf_num)
+        await send_staff_initial_log(sender=sender, target=self.target_user, message=confession_text, dm_sent=dm_sent, conf_num=conf_num, is_locked=not self.allow_replies)
         await send_public_log(message=confession_text, conf_num=conf_num)
 
 
 class MemberSelect(discord.ui.UserSelect):
-    def __init__(self):
+    def __init__(self, allow_replies: bool = True):
         super().__init__(
             placeholder="✨ Choose someone special to message...",
             min_values=1,
             max_values=1
         )
+        self.allow_replies = allow_replies
 
     async def callback(self, interaction: discord.Interaction):
         selected_user = self.values[0]
-        await interaction.response.send_modal(InitialConfessionModal(target_user=selected_user))
+        await interaction.response.send_modal(InitialConfessionModal(target_user=selected_user, allow_replies=self.allow_replies))
 
 
 class MemberSelectView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, allow_replies: bool = True):
         super().__init__()
-        self.add_item(MemberSelect())
+        self.add_item(MemberSelect(allow_replies=allow_replies))
 
 
 @bot.tree.command(name="confess", description="Send a stylish anonymous confession to a member!")
-async def confess(interaction: discord.Interaction):
+@app_commands.describe(allow_replies="Allow the recipient to reply anonymously back to you?")
+async def confess(interaction: discord.Interaction, allow_replies: bool = True):
+    status_text = "enabled" if allow_replies else "disabled 🔒"
     embed = discord.Embed(
         title="🤫 Anonymous Confession System",
-        description="Select a member from the dropdown below to send them a private message. Your identity will **never** be shown to them!",
+        description=f"Select a member from the dropdown below to send them a private message.\n\nReplies are currently **{status_text}**. Your identity will **never** be shown to them!",
         color=discord.Color.from_rgb(255, 105, 180)
     )
     await interaction.response.send_message(
         embed=embed,
-        view=MemberSelectView(),
+        view=MemberSelectView(allow_replies=allow_replies),
         ephemeral=True
     )
 
