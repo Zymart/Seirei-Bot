@@ -179,7 +179,6 @@ async def on_invite_delete(invite: discord.Invite):
 # --- LOGGING FUNCTIONS ---
 
 async def send_staff_initial_log(sender: discord.User, target: discord.User, message: str, dm_sent: bool, conf_num: int, is_locked: bool = False):
-    # Sent to Staff Replies Channel directly instead of the staff channel
     replies_channel = bot.get_channel(STAFF_REPLIES_CHANNEL_ID)
     if not replies_channel:
         return
@@ -360,7 +359,6 @@ async def auto_post_quote():
         quote_text = await fetch_quote()
         await channel.send(quote_text)
         
-        # Save timestamp of when the quote was posted
         quote_state["last_posted"] = datetime.now(timezone.utc).isoformat()
         save_data(quote_state, QUOTE_STATE_FILE)
 
@@ -369,7 +367,6 @@ async def auto_post_quote():
 async def before_auto_post_quote():
     await bot.wait_until_ready()
 
-    # Check if a quote was sent in the last 24 hours
     last_posted_str = quote_state.get("last_posted")
     if last_posted_str:
         try:
@@ -378,7 +375,6 @@ async def before_auto_post_quote():
             elapsed = (now - last_posted).total_seconds()
             twenty_four_hours = 24 * 3600
 
-            # If 24 hours haven't passed yet, wait out the remaining duration
             if elapsed < twenty_four_hours:
                 remaining_seconds = twenty_four_hours - elapsed
                 print(f"Quote state restored. Next automated quote in {int(remaining_seconds / 3600)}h {int((remaining_seconds % 3600) / 60)}m.")
@@ -389,14 +385,12 @@ async def before_auto_post_quote():
 
 # --- COMMANDS ---
 
-# Prefix quote command: !quote
 @bot.command(name="quote")
 async def quote_prefix(ctx):
     quote = await fetch_quote()
     await ctx.send(quote)
 
 
-# Slash quote command: /quote
 @bot.tree.command(name="quote", description="Get a random inspirational quote")
 async def quote_slash(interaction: discord.Interaction):
     quote = await fetch_quote()
@@ -432,7 +426,6 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
 
     total_warns = len(warnings_data[user_id])
 
-    # Direct Message Warning to Member
     warn_dm_embed = discord.Embed(
         title="⚠️ You Have Received a Warning",
         description=f"You received a warning in **{interaction.guild.name}**.\n\n**Reason:** {reason}\n**Total Warnings:** {total_warns}/6",
@@ -446,7 +439,6 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     except discord.Forbidden:
         dm_sent = False
 
-    # Send Log to Moderation Log Channel
     log_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
 
     if log_channel:
@@ -463,7 +455,6 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
         log_embed.set_thumbnail(url=member.display_avatar.url)
         await log_channel.send(embed=log_embed)
 
-    # Automatic Escalation Actions
     escalation_text = ""
     if total_warns >= 6:
         try:
@@ -530,7 +521,6 @@ async def clearwarn(interaction: discord.Interaction, member: discord.Member):
     warnings_data[user_id] = []
     save_data(warnings_data, WARNINGS_FILE)
 
-    # Log Clear Warn to Mod Channel
     log_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
     if log_channel:
         log_embed = discord.Embed(
@@ -779,11 +769,67 @@ async def roll(interaction: discord.Interaction, times: int = 1):
     )
 
 
+# --- AUTOMATED CHANNEL PERMISSION LOCKDOWN ---
+
+async def lockdown_log_channels():
+    """Forces permissions on specified log channels so ONLY the Bot and Owner can send messages."""
+    log_channel_ids = [STAFF_REPLIES_CHANNEL_ID, PUBLIC_CHANNEL_ID, MOD_LOG_CHANNEL_ID]
+    
+    for channel_id in log_channel_ids:
+        channel = bot.get_channel(channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            continue
+
+        guild = channel.guild
+        owner = guild.owner
+
+        try:
+            # Overwrite for @everyone to lock out all standard roles
+            await channel.set_permissions(
+                guild.default_role,
+                send_messages=False,
+                send_messages_in_threads=False,
+                create_public_threads=False,
+                create_private_threads=False,
+                add_reactions=False
+            )
+
+            # Explicitly grant access to the bot itself
+            bot_member = guild.get_member(bot.user.id)
+            if bot_member:
+                await channel.set_permissions(
+                    bot_member,
+                    view_channel=True,
+                    send_messages=True,
+                    embed_links=True,
+                    attach_files=True
+                )
+
+            # Explicitly grant access to the server owner
+            if owner:
+                await channel.set_permissions(
+                    owner,
+                    view_channel=True,
+                    send_messages=True,
+                    embed_links=True,
+                    attach_files=True
+                )
+
+            print(f"Locked down channel permissions for #{channel.name} ({channel.id})")
+        except discord.Forbidden:
+            print(f"⚠️ Failed to update permissions for channel {channel.id} due to missing 'Manage Roles/Channels' permission.")
+        except Exception as e:
+            print(f"Error locking down channel {channel.id}: {e}")
+
+
 # --- ON_READY EVENT ---
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    
+    # Run the automated lockdown on log channels
+    await lockdown_log_channels()
     
     if not auto_post_quote.is_running():
         auto_post_quote.start()
