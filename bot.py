@@ -51,9 +51,9 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Channel IDs
 WELCOME_CHANNEL_ID = 1544178863280758855       # Updated Join / Welcome Channel ID
-STAFF_CHANNEL_ID = 1543969779591815333          # Initial Confessions Audit Log
+STAFF_CHANNEL_ID = 1543969779591815333          # Unused for initial confession audit now
 PUBLIC_CHANNEL_ID = 1547265722525290536         # Public Anonymous Log
-STAFF_REPLIES_CHANNEL_ID = 1544215871885541386     # Staff Replies Log ONLY
+STAFF_REPLIES_CHANNEL_ID = 1544215871885541386  # All Staff Logs & Replies
 DAILY_QUOTE_CHANNEL_ID = 1547444666700537956    # 24-Hour Quote Target Channel
 MOD_LOG_CHANNEL_ID = 1544478399198928990        # Moderation Log Channel ID
 
@@ -179,8 +179,9 @@ async def on_invite_delete(invite: discord.Invite):
 # --- LOGGING FUNCTIONS ---
 
 async def send_staff_initial_log(sender: discord.User, target: discord.User, message: str, dm_sent: bool, conf_num: int, is_locked: bool = False):
-    staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
-    if not staff_channel:
+    # Sent to Staff Replies Channel directly instead of the staff channel
+    replies_channel = bot.get_channel(STAFF_REPLIES_CHANNEL_ID)
+    if not replies_channel:
         return
 
     log_color = discord.Color.from_rgb(138, 43, 226) if dm_sent else discord.Color.from_rgb(178, 34, 34)
@@ -199,7 +200,7 @@ async def send_staff_initial_log(sender: discord.User, target: discord.User, mes
     staff_embed.add_field(name="💬 Message Content", value=f"```fix\n{message}\n```", inline=False)
     staff_embed.set_thumbnail(url=sender.display_avatar.url)
 
-    await staff_channel.send(embed=staff_embed)
+    await replies_channel.send(embed=staff_embed)
 
 
 async def send_public_log(message: str, conf_num: int):
@@ -635,7 +636,6 @@ class InitialConfessionModal(discord.ui.Modal):
     )
 
     def __init__(self, target_user: discord.User, allow_replies: bool = True):
-        # Set dynamic title including user's name
         super().__init__(title=f"💌 Confessing to {target_user.display_name[:20]}")
         self.target_user = target_user
         self.allow_replies = allow_replies
@@ -669,7 +669,6 @@ class InitialConfessionModal(discord.ui.Modal):
 
             dm_sent = True
 
-            # Save mapping & active session ONLY if replies are allowed
             if self.allow_replies:
                 message_map[str(sent_msg.id)] = str(sender.id)
                 save_data(message_map, MSG_MAP_FILE)
