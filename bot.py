@@ -508,10 +508,16 @@ class DivisionApprovalView(discord.ui.View):
         if role_errors:
             status_msg += "\n\n⚠️ **Permission Warnings:**\n" + "\n".join(f"• {e}" for e in role_errors)
 
-        await interaction.response.edit_message(content=status_msg, embed=None, view=self)
+        try:
+            await interaction.response.edit_message(content=status_msg, embed=None, view=self)
+        except discord.NotFound:
+            pass
 
         await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
-        await interaction.channel.delete(reason=f"Tryout complete and approved by {interaction.user.name}")
+        try:
+            await interaction.channel.delete(reason=f"Tryout complete and approved by {interaction.user.name}")
+        except discord.NotFound:
+            pass
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="reject_division")
     async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -522,11 +528,14 @@ class DivisionApprovalView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-        await interaction.response.edit_message(
-            content=f"❌ **Assignment Rejected:** {interaction.user.mention} rejected placing {self.ticket_owner.mention} into **{self.selected_division}**.",
-            embed=None,
-            view=self
-        )
+        try:
+            await interaction.response.edit_message(
+                content=f"❌ **Assignment Rejected:** {interaction.user.mention} rejected placing {self.ticket_owner.mention} into **{self.selected_division}**.",
+                embed=None,
+                view=self
+            )
+        except discord.NotFound:
+            pass
 
 
 class DivisionSelect(discord.ui.Select):
@@ -563,10 +572,20 @@ class DivisionSelect(discord.ui.Select):
                 status_msg += "\n\n⚠️ **Permission Warnings:**\n" + "\n".join(f"• {e}" for e in role_errors)
 
             self.disabled = True
-            await interaction.response.edit_message(content=status_msg, view=self)
+            
+            try:
+                # FIXED: view=self.view instead of view=self fixes AttributeError
+                await interaction.response.edit_message(content=status_msg, view=self.view)
+            except discord.NotFound:
+                pass
 
             await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
-            await interaction.channel.delete(reason=f"Tryout completed by Socho/Kanbu ({interaction.user.name})")
+            
+            try:
+                # FIXED: Handles missing message/channel gracefully
+                await interaction.channel.delete(reason=f"Tryout completed by Socho/Kanbu ({interaction.user.name})")
+            except discord.NotFound:
+                pass
             return
 
         # IF LOWER STAFF (TAICHO/FUKUTAICHO), SEND FOR CONFIRMATION
@@ -590,7 +609,11 @@ class DivisionSelect(discord.ui.Select):
 
         pings = f"<@&{SOCHO_ROLE_ID}> <@&{KANBU_ROLE_ID}>"
         await interaction.channel.send(content=f"🔔 {pings}", embed=approval_embed, view=view)
-        await interaction.response.send_message(f"✅ Submitted request to assign **{division_name}**. Awaiting higher-up confirmation.", ephemeral=True)
+        
+        try:
+            await interaction.response.send_message(f"✅ Submitted request to assign **{division_name}**. Awaiting higher-up confirmation.", ephemeral=True)
+        except discord.NotFound:
+            pass
 
 
 class DivisionSelectView(discord.ui.View):
@@ -632,7 +655,11 @@ class TicketControlView(discord.ui.View):
 
         await interaction.response.send_message("🔒 Closing ticket in 5 seconds...")
         await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
-        await interaction.channel.delete(reason=f"Ticket closed by {interaction.user.name}")
+        
+        try:
+            await interaction.channel.delete(reason=f"Ticket closed by {interaction.user.name}")
+        except discord.NotFound:
+            pass
 
 
 class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
