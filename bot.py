@@ -440,19 +440,36 @@ class DivisionSelect(discord.ui.Select):
         taiin_role = guild.get_role(TAIIN_ROLE_ID)
         tryout_role = guild.get_role(TRYOUT_ROLE_ID)
 
-        # Process role updates
-        if division_role:
-            await self.ticket_owner.add_roles(division_role, reason=f"Tryout Passed ({division_name})")
-        if taiin_role:
-            await self.ticket_owner.add_roles(taiin_role, reason="Tryout Passed - Added Taiin Role")
-        if tryout_role and tryout_role in self.ticket_owner.roles:
-            await self.ticket_owner.remove_roles(tryout_role, reason="Tryout Passed - Removed Tryout Role")
+        # Process role updates safely with error checks
+        assigned_roles = []
+        role_errors = []
 
-        # Send confirmation message
-        await interaction.response.send_message(
-            f"✅ **Tryout Completed!**\nassigned {self.ticket_owner.mention} to **{division_name}** and granted the **Taiin** role.",
-            ephemeral=False
-        )
+        try:
+            if division_role:
+                await self.ticket_owner.add_roles(division_role, reason=f"Tryout Passed ({division_name})")
+                assigned_roles.append(division_name)
+        except discord.Forbidden:
+            role_errors.append(f"Failed to assign **{division_name}** (Bot role hierarchy is too low)")
+
+        try:
+            if taiin_role:
+                await self.ticket_owner.add_roles(taiin_role, reason="Tryout Passed - Added Taiin Role")
+                assigned_roles.append("Taiin")
+        except discord.Forbidden:
+            role_errors.append("Failed to assign **Taiin** role (Bot role hierarchy is too low)")
+
+        try:
+            if tryout_role and tryout_role in self.ticket_owner.roles:
+                await self.ticket_owner.remove_roles(tryout_role, reason="Tryout Passed - Removed Tryout Role")
+        except discord.Forbidden:
+            role_errors.append("Failed to remove **Tryout** role (Bot role hierarchy is too low)")
+
+        # Generate response message
+        status_msg = f"✅ **Tryout Completed!**\nAssigned {self.ticket_owner.mention} to **{division_name}** and updated roles."
+        if role_errors:
+            status_msg += "\n\n⚠️ **Permission Warnings:**\n" + "\n".join(f"• {e}" for e in role_errors)
+
+        await interaction.response.send_message(status_msg, ephemeral=False)
 
         # Log tryout to Staff Logs
         log_channel = bot.get_channel(STAFF_REPLIES_CHANNEL_ID)
@@ -465,6 +482,8 @@ class DivisionSelect(discord.ui.Select):
             log_embed.add_field(name="🛡️ Evaluator (Staff)", value=interaction.user.mention, inline=True)
             log_embed.add_field(name="👤 Recruit", value=f"{self.ticket_owner.mention} (`{self.ticket_owner.id}`)", inline=True)
             log_embed.add_field(name="🚩 Division Assigned", value=division_name, inline=False)
+            if role_errors:
+                log_embed.add_field(name="⚠️ Warnings", value="\n".join(role_errors), inline=False)
             log_embed.set_thumbnail(url=self.ticket_owner.display_avatar.url)
             await log_channel.send(embed=log_embed)
 
@@ -480,7 +499,7 @@ class DivisionSelectView(discord.ui.View):
 
 
 class TicketControlView(discord.ui.View):
-    def __init__(self, ticket_owner: discord.Member):
+    def __init__(self, ticket_owner: discord.Member = None):
         super().__init__(timeout=None)
         self.ticket_owner = ticket_owner
 
@@ -490,7 +509,19 @@ class TicketControlView(discord.ui.View):
             await interaction.response.send_message("❌ Only authorized staff can complete tryouts.", ephemeral=True)
             return
 
-        view = DivisionSelectView(ticket_owner=self.ticket_owner)
+        # Infer ticket owner from channel permissions if view was restored after restart
+        target_member = self.ticket_owner
+        if not target_member:
+            for member, overwrite in interaction.channel.overwrites.items():
+                if isinstance(member, discord.Member) and not member.bot and not is_staff(member):
+                    target_member = member
+                    break
+
+        if not target_member:
+            await interaction.response.send_message("❌ Could not identify the ticket owner in this channel.", ephemeral=True)
+            return
+
+        view = DivisionSelectView(ticket_owner=target_member)
         await interaction.response.send_message("Please select a Division for this recruit:", view=view, ephemeral=True)
 
     @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
@@ -506,12 +537,26 @@ class TicketControlView(discord.ui.View):
 
 class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
     q1 = discord.ui.TextInput(label="Roblox & Gakuran Name", placeholder="e.g. Roblox/Wang Ling", required=True)
-    q2 = discord.ui.TextInput(label="Region / Country", placeholder="e.g. Asia/Philippines", required=True)
-    q3 = discord.ui.TextInput(label="Age", placeholder="e.g. 18", required=True, max_length=3)
+    q2 = discord.ui.TextInput(label="Region / Country / Gender", placeholder="e.g. Asia/Philippines/Male", required=True)
+    q3 = discord.ui.TextInput(
+        label="Age", 
+        placeholder="Enter numbers only (e.g. 18)", 
+        required=True, 
+        min_length=1, 
+        max_length=3
+    )
     q4 = discord.ui.TextInput(label="Fighting Style", placeholder="e.g. Kure/Hakari", required=True)
     q5 = discord.ui.TextInput(label="Who invited you here?", placeholder="Discord Name / Gakuran Name", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Validate that Age contains numbers only
+        if not self.q3.value.strip().isdigit():
+            await interaction.response.send_message(
+                "❌ **Invalid Age:** Please enter numbers only (e.g., `18`). Words or letters are not allowed.",
+                ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
@@ -546,8 +591,8 @@ class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
             timestamp=discord.utils.utcnow()
         )
         embed.add_field(name="1️⃣ Roblox / Gakuran Name", value=self.q1.value, inline=False)
-        embed.add_field(name="2️⃣ Region / Country", value=self.q2.value, inline=False)
-        embed.add_field(name="3️⃣ Age", value=self.q3.value, inline=False)
+        embed.add_field(name="2️⃣ Region / Country / Gender", value=self.q2.value, inline=False)
+        embed.add_field(name="3️⃣ Age", value=self.q3.value.strip(), inline=False)
         embed.add_field(name="4️⃣ Fighting Style", value=self.q4.value, inline=False)
         embed.add_field(name="5️⃣ Invited By", value=self.q5.value, inline=False)
         embed.set_thumbnail(url=applicant.display_avatar.url)
@@ -974,8 +1019,9 @@ async def roll(interaction: discord.Interaction, times: int = 1):
 
 @bot.event
 async def on_ready():
-    # Register persistent views so buttons remain active across bot restarts
+    # Register persistent views across bot restarts
     bot.add_view(SpawnTicketView())
+    bot.add_view(TicketControlView())
     
     await bot.tree.sync()
     
