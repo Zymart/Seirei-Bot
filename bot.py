@@ -49,13 +49,14 @@ intents.invites = True       # Required to track invites
 # Disable default help command
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# Channel IDs
+# Channel & Category IDs
 WELCOME_CHANNEL_ID = 1544178863280758855       # Join / Welcome Channel ID
 STAFF_CHANNEL_ID = 1543969779591815333          # Unused initial channel
 PUBLIC_CHANNEL_ID = 1547265722525290536         # Public Anonymous Log (Visible to ALL, Read-Only)
 STAFF_REPLIES_CHANNEL_ID = 1544215871885541386  # All Staff Logs & Replies (Admins Only, Read-Only)
 DAILY_QUOTE_CHANNEL_ID = 1547444666700537956    # 24-Hour Quote Target Channel
 MOD_LOG_CHANNEL_ID = 1544478399198928990        # Moderation Log Channel ID (Admins Only, Read-Only)
+TICKET_CATEGORY_ID = 1544219036571672736        # Category where all created tickets will be sent
 
 # Role IDs for Ticket Permissions & Divisions
 TICKET_STAFF_ROLE_IDS = [
@@ -66,8 +67,8 @@ TICKET_STAFF_ROLE_IDS = [
 ]
 
 DIVISION_ROLES = {
-    "1st Division": 1544221064773505034,
-    "2nd Division": 1544221064773505034,
+    "1st Division": 1544691801800187944,
+    "2nd Division": 1544691862705668276,
     "3rd Division": 1544691913431584779,
     "4th Division": 1544691956590841876,
     "5th Division": 1544691994968981564
@@ -562,7 +563,10 @@ class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
         guild = interaction.guild
         applicant = interaction.user
 
-        # Create private text channel
+        # Fetch specified target Category
+        ticket_category = guild.get_channel(TICKET_CATEGORY_ID)
+
+        # Create private text channel inside specified category
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             applicant: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
@@ -577,6 +581,7 @@ class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
         channel_name = f"ticket-{applicant.name}".lower()[:32]
         ticket_channel = await guild.create_text_channel(
             name=channel_name,
+            category=ticket_category,
             overwrites=overwrites,
             reason=f"Ticket created for {applicant.name}"
         )
@@ -629,6 +634,27 @@ async def spawnticket(interaction: discord.Interaction):
 async def spawnticket_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("❌ You lack permissions (Administrator) to use `/spawnticket`.", ephemeral=True)
+
+
+@bot.tree.command(name="donetryout", description="Complete tryout and open Division selection for this ticket")
+async def donetryout(interaction: discord.Interaction):
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("❌ Only authorized staff can use this command.", ephemeral=True)
+        return
+
+    # Detect the ticket owner in the current ticket channel
+    target_member = None
+    for member, overwrite in interaction.channel.overwrites.items():
+        if isinstance(member, discord.Member) and not member.bot and not is_staff(member):
+            target_member = member
+            break
+
+    if not target_member:
+        await interaction.response.send_message("❌ Could not identify the ticket owner in this channel. Ensure you are running this in a ticket channel.", ephemeral=True)
+        return
+
+    view = DivisionSelectView(ticket_owner=target_member)
+    await interaction.response.send_message("Please select a Division for this recruit:", view=view, ephemeral=True)
 
 
 # ==========================================
