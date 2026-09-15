@@ -58,10 +58,15 @@ DAILY_QUOTE_CHANNEL_ID = 1547444666700537956    # 24-Hour Quote Target Channel
 MOD_LOG_CHANNEL_ID = 1544478399198928990        # Moderation Log Channel ID (Admins Only, Read-Only)
 TICKET_CATEGORY_ID = 1544219036571672736        # Category where all created tickets will be sent
 
-# Role IDs for Ticket Permissions & Divisions
+# Higher-Up Role IDs (Confirmation Approvers & Auto-Bypass Users)
+SOCHO_ROLE_ID = 1544005525530878024
+KANBU_ROLE_ID = 1543968513952321749
+APPROVAL_ROLE_IDS = [SOCHO_ROLE_ID, KANBU_ROLE_ID]
+
+# Role IDs for Ticket Staff
 TICKET_STAFF_ROLE_IDS = [
-    1544005525530878024,
-    1543968513952321749,
+    SOCHO_ROLE_ID,
+    KANBU_ROLE_ID,
     1544220934360272916,
     1544221064773505034
 ]
@@ -143,13 +148,19 @@ def get_next_confession_number():
     return counter_data["count"]
 
 
-# --- HELPER PERMISSION CHECK ---
+# --- HELPER PERMISSION CHECKS ---
 
 def is_staff(member: discord.Member) -> bool:
-    """Check if the member has any of the ticket staff roles or admin permissions."""
+    """Check if the member has any ticket staff roles or admin permissions."""
     if member.guild_permissions.administrator:
         return True
     return any(role.id in TICKET_STAFF_ROLE_IDS for role in member.roles)
+
+def is_socho_or_kanbu(member: discord.Member) -> bool:
+    """Check if member has Socho, Kanbu, or Administrator permissions."""
+    if member.guild_permissions.administrator:
+        return True
+    return any(role.id in APPROVAL_ROLE_IDS for role in member.roles)
 
 
 # --- WELCOME & INVITE TRACKER EVENTS ---
@@ -416,6 +427,108 @@ async def before_auto_post_quote():
 # 3. TICKET SYSTEM IMPLEMENTATION
 # ==========================================
 
+async def process_role_assignment(guild: discord.Guild, ticket_owner: discord.Member, division_name: str, evaluator: discord.User, approver: discord.User = None):
+    """Core logic to assign Division & Taiin roles, remove Tryout role, log, and delete channel."""
+    div_role_id = DIVISION_ROLES.get(division_name)
+    division_role = guild.get_role(div_role_id)
+    taiin_role = guild.get_role(TAIIN_ROLE_ID)
+    tryout_role = guild.get_role(TRYOUT_ROLE_ID)
+
+    role_errors = []
+
+    # Assign Division Role
+    try:
+        if division_role:
+            await ticket_owner.add_roles(division_role, reason=f"Tryout Passed ({division_name})")
+    except discord.Forbidden:
+        role_errors.append(f"Failed to assign **{division_name}** (Bot hierarchy too low)")
+
+    # Assign Taiin Role
+    try:
+        if taiin_role:
+            await ticket_owner.add_roles(taiin_role, reason="Tryout Passed - Added Taiin")
+    except discord.Forbidden:
+        role_errors.append("Failed to assign **Taiin** role (Bot hierarchy too low)")
+
+    # Remove Tryout Role
+    try:
+        if tryout_role and tryout_role in ticket_owner.roles:
+            await ticket_owner.remove_roles(tryout_role, reason="Tryout Passed - Removed Tryout")
+    except discord.Forbidden:
+        role_errors.append("Failed to remove **Tryout** role (Bot hierarchy too low)")
+
+    # Log action to Staff Channel
+    log_channel = bot.get_channel(STAFF_REPLIES_CHANNEL_ID)
+    if log_channel:
+        log_embed = discord.Embed(
+            title="⚔️ Tryout Approved & Logged",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.add_field(name="🛡️ Evaluator", value=evaluator.mention, inline=True)
+        if approver:
+            log_embed.add_field(name="👑 Approved By", value=approver.mention, inline=True)
+        else:
+            log_embed.add_field(name="⚡ Status", value="Auto-Approved (Socho/Kanbu)", inline=True)
+        log_embed.add_field(name="👤 Recruit", value=f"{ticket_owner.mention} (`{ticket_owner.id}`)", inline=False)
+        log_embed.add_field(name="🚩 Division Assigned", value=division_name, inline=False)
+        if role_errors:
+            log_embed.add_field(name="⚠️ Warnings", value="\n".join(role_errors), inline=False)
+        log_embed.set_thumbnail(url=ticket_owner.display_avatar.url)
+        await log_channel.send(embed=log_embed)
+
+    return role_errors
+
+
+class DivisionApprovalView(discord.ui.View):
+    def __init__(self, ticket_owner: discord.Member, selected_division: str, staff_user: discord.User):
+        super().__init__(timeout=None)
+        self.ticket_owner = ticket_owner
+        self.selected_division = selected_division
+        self.staff_user = staff_user
+
+    @discord.ui.button(label="Confirm Division", style=discord.ButtonStyle.success, emoji="✅", custom_id="approve_division")
+    async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_socho_or_kanbu(interaction.user):
+            await interaction.response.send_message("❌ Only **Socho** or **Kanbu** members can confirm division assignments.", ephemeral=True)
+            return
+
+        role_errors = await process_role_assignment(
+            guild=interaction.guild,
+            ticket_owner=self.ticket_owner,
+            division_name=self.selected_division,
+            evaluator=self.staff_user,
+            approver=interaction.user
+        )
+
+        for item in self.children:
+            item.disabled = True
+
+        status_msg = f"🎉 **Division Assignment Approved!**\n{self.ticket_owner.mention} has been placed in **{self.selected_division}** by {interaction.user.mention}.\n\n🔒 *This ticket will automatically close and delete in 5 seconds...*"
+        if role_errors:
+            status_msg += "\n\n⚠️ **Permission Warnings:**\n" + "\n".join(f"• {e}" for e in role_errors)
+
+        await interaction.response.edit_message(content=status_msg, embed=None, view=self)
+
+        await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
+        await interaction.channel.delete(reason=f"Tryout complete and approved by {interaction.user.name}")
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="reject_division")
+    async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_socho_or_kanbu(interaction.user):
+            await interaction.response.send_message("❌ Only **Socho** or **Kanbu** members can reject division assignments.", ephemeral=True)
+            return
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(
+            content=f"❌ **Assignment Rejected:** {interaction.user.mention} rejected placing {self.ticket_owner.mention} into **{self.selected_division}**.",
+            embed=None,
+            view=self
+        )
+
+
 class DivisionSelect(discord.ui.Select):
     def __init__(self, ticket_owner: discord.Member):
         options = [
@@ -430,67 +543,54 @@ class DivisionSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if not is_staff(interaction.user):
-            await interaction.response.send_message("❌ Only authorized staff can assign divisions.", ephemeral=True)
+            await interaction.response.send_message("❌ Only authorized staff can select a division.", ephemeral=True)
             return
 
         division_name = self.values[0]
-        div_role_id = DIVISION_ROLES.get(division_name)
 
-        guild = interaction.guild
-        division_role = guild.get_role(div_role_id)
-        taiin_role = guild.get_role(TAIIN_ROLE_ID)
-        tryout_role = guild.get_role(TRYOUT_ROLE_ID)
-
-        # Process role updates safely with error checks
-        assigned_roles = []
-        role_errors = []
-
-        try:
-            if division_role:
-                await self.ticket_owner.add_roles(division_role, reason=f"Tryout Passed ({division_name})")
-                assigned_roles.append(division_name)
-        except discord.Forbidden:
-            role_errors.append(f"Failed to assign **{division_name}** (Bot role hierarchy is too low)")
-
-        try:
-            if taiin_role:
-                await self.ticket_owner.add_roles(taiin_role, reason="Tryout Passed - Added Taiin Role")
-                assigned_roles.append("Taiin")
-        except discord.Forbidden:
-            role_errors.append("Failed to assign **Taiin** role (Bot role hierarchy is too low)")
-
-        try:
-            if tryout_role and tryout_role in self.ticket_owner.roles:
-                await self.ticket_owner.remove_roles(tryout_role, reason="Tryout Passed - Removed Tryout Role")
-        except discord.Forbidden:
-            role_errors.append("Failed to remove **Tryout** role (Bot role hierarchy is too low)")
-
-        # Generate response message
-        status_msg = f"✅ **Tryout Completed!**\nAssigned {self.ticket_owner.mention} to **{division_name}** and updated roles."
-        if role_errors:
-            status_msg += "\n\n⚠️ **Permission Warnings:**\n" + "\n".join(f"• {e}" for e in role_errors)
-
-        await interaction.response.send_message(status_msg, ephemeral=False)
-
-        # Log tryout to Staff Logs
-        log_channel = bot.get_channel(STAFF_REPLIES_CHANNEL_ID)
-        if log_channel:
-            log_embed = discord.Embed(
-                title="⚔️ Tryout Completed Log",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
+        # AUTO-BYPASS IF SOCHO OR KANBU
+        if is_socho_or_kanbu(interaction.user):
+            role_errors = await process_role_assignment(
+                guild=interaction.guild,
+                ticket_owner=self.ticket_owner,
+                division_name=division_name,
+                evaluator=interaction.user,
+                approver=None
             )
-            log_embed.add_field(name="🛡️ Evaluator (Staff)", value=interaction.user.mention, inline=True)
-            log_embed.add_field(name="👤 Recruit", value=f"{self.ticket_owner.mention} (`{self.ticket_owner.id}`)", inline=True)
-            log_embed.add_field(name="🚩 Division Assigned", value=division_name, inline=False)
-            if role_errors:
-                log_embed.add_field(name="⚠️ Warnings", value="\n".join(role_errors), inline=False)
-            log_embed.set_thumbnail(url=self.ticket_owner.display_avatar.url)
-            await log_channel.send(embed=log_embed)
 
-        # Disable selection after use
-        self.disabled = True
-        await interaction.message.edit(view=self.view)
+            status_msg = f"⚡ **Tryout Instantly Completed!** (Auto-Approved by {interaction.user.mention})\nAssigned {self.ticket_owner.mention} to **{division_name}**.\n\n🔒 *This ticket will automatically delete in 5 seconds...*"
+            if role_errors:
+                status_msg += "\n\n⚠️ **Permission Warnings:**\n" + "\n".join(f"• {e}" for e in role_errors)
+
+            self.disabled = True
+            await interaction.response.edit_message(content=status_msg, view=self)
+
+            await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
+            await interaction.channel.delete(reason=f"Tryout completed by Socho/Kanbu ({interaction.user.name})")
+            return
+
+        # IF LOWER STAFF (TAICHO/FUKUTAICHO), SEND FOR CONFIRMATION
+        approval_embed = discord.Embed(
+            title="⏳ Division Assignment Pending Approval",
+            description=(
+                f"**Evaluator:** {interaction.user.mention}\n"
+                f"**Recruit:** {self.ticket_owner.mention}\n"
+                f"**Selected Division:** **{division_name}**\n\n"
+                f"⚠️ *Requires confirmation from <@&{SOCHO_ROLE_ID}> or <@&{KANBU_ROLE_ID}> to complete role assignment.*"
+            ),
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        view = DivisionApprovalView(
+            ticket_owner=self.ticket_owner,
+            selected_division=division_name,
+            staff_user=interaction.user
+        )
+
+        pings = f"<@&{SOCHO_ROLE_ID}> <@&{KANBU_ROLE_ID}>"
+        await interaction.channel.send(content=f"🔔 {pings}", embed=approval_embed, view=view)
+        await interaction.response.send_message(f"✅ Submitted request to assign **{division_name}**. Awaiting higher-up confirmation.", ephemeral=True)
 
 
 class DivisionSelectView(discord.ui.View):
@@ -510,7 +610,6 @@ class TicketControlView(discord.ui.View):
             await interaction.response.send_message("❌ Only authorized staff can complete tryouts.", ephemeral=True)
             return
 
-        # Infer ticket owner from channel permissions if view was restored after restart
         target_member = self.ticket_owner
         if not target_member:
             for member, overwrite in interaction.channel.overwrites.items():
@@ -550,7 +649,6 @@ class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
     q5 = discord.ui.TextInput(label="Who invited you here?", placeholder="Discord Name / Gakuran Name", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Validate that Age contains numbers only
         if not self.q3.value.strip().isdigit():
             await interaction.response.send_message(
                 "❌ **Invalid Age:** Please enter numbers only (e.g., `18`). Words or letters are not allowed.",
@@ -563,10 +661,8 @@ class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
         guild = interaction.guild
         applicant = interaction.user
 
-        # Fetch specified target Category
         ticket_category = guild.get_channel(TICKET_CATEGORY_ID)
 
-        # Create private text channel inside specified category
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             applicant: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
@@ -586,10 +682,8 @@ class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
             reason=f"Ticket created for {applicant.name}"
         )
 
-        # Construct staff pings
         ping_mentions = " ".join([f"<@&{r_id}>" for r_id in TICKET_STAFF_ROLE_IDS])
 
-        # Application Embed
         embed = discord.Embed(
             title=f"🎫 Ticket Application — {applicant.display_name}",
             color=discord.Color.blue(),
@@ -642,7 +736,6 @@ async def donetryout(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Only authorized staff can use this command.", ephemeral=True)
         return
 
-    # Detect the ticket owner in the current ticket channel
     target_member = None
     for member, overwrite in interaction.channel.overwrites.items():
         if isinstance(member, discord.Member) and not member.bot and not is_staff(member):
