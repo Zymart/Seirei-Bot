@@ -57,6 +57,25 @@ STAFF_REPLIES_CHANNEL_ID = 1544215871885541386  # All Staff Logs & Replies (Admi
 DAILY_QUOTE_CHANNEL_ID = 1547444666700537956    # 24-Hour Quote Target Channel
 MOD_LOG_CHANNEL_ID = 1544478399198928990        # Moderation Log Channel ID (Admins Only, Read-Only)
 
+# Role IDs for Ticket Permissions & Divisions
+TICKET_STAFF_ROLE_IDS = [
+    1544005525530878024,
+    1543968513952321749,
+    1544220934360272916,
+    1544221064773505034
+]
+
+DIVISION_ROLES = {
+    "1st Division": 1544221064773505034,
+    "2nd Division": 1544221064773505034,
+    "3rd Division": 1544691913431584779,
+    "4th Division": 1544691956590841876,
+    "5th Division": 1544691994968981564
+}
+
+TAIIN_ROLE_ID = 1544321376675168409
+TRYOUT_ROLE_ID = 1544208971848745090
+
 MSG_MAP_FILE = "message_map.json"
 USER_ACTIVE_FILE = "user_active_threads.json"
 COUNTER_FILE = "counter.json"
@@ -121,6 +140,15 @@ def get_next_confession_number():
     counter_data["count"] += 1
     save_data(counter_data, COUNTER_FILE)
     return counter_data["count"]
+
+
+# --- HELPER PERMISSION CHECK ---
+
+def is_staff(member: discord.Member) -> bool:
+    """Check if the member has any of the ticket staff roles or admin permissions."""
+    if member.guild_permissions.administrator:
+        return True
+    return any(role.id in TICKET_STAFF_ROLE_IDS for role in member.roles)
 
 
 # --- WELCOME & INVITE TRACKER EVENTS ---
@@ -383,7 +411,184 @@ async def before_auto_post_quote():
             print(f"Error restoring quote state timestamp: {e}")
 
 
-# --- COMMANDS ---
+# ==========================================
+# 3. TICKET SYSTEM IMPLEMENTATION
+# ==========================================
+
+class DivisionSelect(discord.ui.Select):
+    def __init__(self, ticket_owner: discord.Member):
+        options = [
+            discord.SelectOption(label="1st Division", description="Assign 1st Division"),
+            discord.SelectOption(label="2nd Division", description="Assign 2nd Division"),
+            discord.SelectOption(label="3rd Division", description="Assign 3rd Division"),
+            discord.SelectOption(label="4th Division", description="Assign 4th Division"),
+            discord.SelectOption(label="5th Division", description="Assign 5th Division"),
+        ]
+        super().__init__(placeholder="Choose a Division for the recruit...", min_values=1, max_values=1, options=options)
+        self.ticket_owner = ticket_owner
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("❌ Only authorized staff can assign divisions.", ephemeral=True)
+            return
+
+        division_name = self.values[0]
+        div_role_id = DIVISION_ROLES.get(division_name)
+
+        guild = interaction.guild
+        division_role = guild.get_role(div_role_id)
+        taiin_role = guild.get_role(TAIIN_ROLE_ID)
+        tryout_role = guild.get_role(TRYOUT_ROLE_ID)
+
+        # Process role updates
+        if division_role:
+            await self.ticket_owner.add_roles(division_role, reason=f"Tryout Passed ({division_name})")
+        if taiin_role:
+            await self.ticket_owner.add_roles(taiin_role, reason="Tryout Passed - Added Taiin Role")
+        if tryout_role and tryout_role in self.ticket_owner.roles:
+            await self.ticket_owner.remove_roles(tryout_role, reason="Tryout Passed - Removed Tryout Role")
+
+        # Send confirmation message
+        await interaction.response.send_message(
+            f"✅ **Tryout Completed!**\nassigned {self.ticket_owner.mention} to **{division_name}** and granted the **Taiin** role.",
+            ephemeral=False
+        )
+
+        # Log tryout to Staff Logs
+        log_channel = bot.get_channel(STAFF_REPLIES_CHANNEL_ID)
+        if log_channel:
+            log_embed = discord.Embed(
+                title="⚔️ Tryout Completed Log",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            log_embed.add_field(name="🛡️ Evaluator (Staff)", value=interaction.user.mention, inline=True)
+            log_embed.add_field(name="👤 Recruit", value=f"{self.ticket_owner.mention} (`{self.ticket_owner.id}`)", inline=True)
+            log_embed.add_field(name="🚩 Division Assigned", value=division_name, inline=False)
+            log_embed.set_thumbnail(url=self.ticket_owner.display_avatar.url)
+            await log_channel.send(embed=log_embed)
+
+        # Disable selection after use
+        self.disabled = True
+        await interaction.message.edit(view=self.view)
+
+
+class DivisionSelectView(discord.ui.View):
+    def __init__(self, ticket_owner: discord.Member):
+        super().__init__(timeout=None)
+        self.add_item(DivisionSelect(ticket_owner=ticket_owner))
+
+
+class TicketControlView(discord.ui.View):
+    def __init__(self, ticket_owner: discord.Member):
+        super().__init__(timeout=None)
+        self.ticket_owner = ticket_owner
+
+    @discord.ui.button(label="Done Tryout", style=discord.ButtonStyle.success, emoji="✅", custom_id="ticket_done_tryout")
+    async def done_tryout(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("❌ Only authorized staff can complete tryouts.", ephemeral=True)
+            return
+
+        view = DivisionSelectView(ticket_owner=self.ticket_owner)
+        await interaction.response.send_message("Please select a Division for this recruit:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("❌ Only staff members can close tickets.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("🔒 Closing ticket in 5 seconds...")
+        await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
+        await interaction.channel.delete(reason=f"Ticket closed by {interaction.user.name}")
+
+
+class TicketFormModal(discord.ui.Modal, title="📋 Tryout Application Form"):
+    q1 = discord.ui.TextInput(label="Roblox & Gakuran Name", placeholder="e.g. Roblox/Wang Ling", required=True)
+    q2 = discord.ui.TextInput(label="Region / Country", placeholder="e.g. Asia/Philippines", required=True)
+    q3 = discord.ui.TextInput(label="Age", placeholder="e.g. 18", required=True, max_length=3)
+    q4 = discord.ui.TextInput(label="Fighting Style", placeholder="e.g. Kure/Hakari", required=True)
+    q5 = discord.ui.TextInput(label="Who invited you here?", placeholder="Discord Name / Gakuran Name", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        applicant = interaction.user
+
+        # Create private text channel
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            applicant: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+
+        for role_id in TICKET_STAFF_ROLE_IDS:
+            role = guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        channel_name = f"ticket-{applicant.name}".lower()[:32]
+        ticket_channel = await guild.create_text_channel(
+            name=channel_name,
+            overwrites=overwrites,
+            reason=f"Ticket created for {applicant.name}"
+        )
+
+        # Construct staff pings
+        ping_mentions = " ".join([f"<@&{r_id}>" for r_id in TICKET_STAFF_ROLE_IDS])
+
+        # Application Embed
+        embed = discord.Embed(
+            title=f"🎫 Ticket Application — {applicant.display_name}",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="1️⃣ Roblox / Gakuran Name", value=self.q1.value, inline=False)
+        embed.add_field(name="2️⃣ Region / Country", value=self.q2.value, inline=False)
+        embed.add_field(name="3️⃣ Age", value=self.q3.value, inline=False)
+        embed.add_field(name="4️⃣ Fighting Style", value=self.q4.value, inline=False)
+        embed.add_field(name="5️⃣ Invited By", value=self.q5.value, inline=False)
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+
+        view = TicketControlView(ticket_owner=applicant)
+        await ticket_channel.send(content=f"{applicant.mention} {ping_mentions}", embed=embed, view=view)
+
+        await interaction.followup.send(f"✅ Ticket created! Please head over to {ticket_channel.mention}", ephemeral=True)
+
+
+class SpawnTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.primary, emoji="🎫", custom_id="spawn_ticket_create")
+    async def create_ticket_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TicketFormModal())
+
+
+@bot.tree.command(name="spawnticket", description="Spawn the ticket creation message in this channel")
+@app_commands.checks.has_permissions(administrator=True)
+async def spawnticket(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🎫 Tryout & Support Ticket System",
+        description="Click the **Create Ticket** button below to open a ticket and apply for tryouts!",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Click below to get started!")
+    await interaction.channel.send(embed=embed, view=SpawnTicketView())
+    await interaction.response.send_message("✅ Ticket panel successfully spawned!", ephemeral=True)
+
+
+@spawnticket.error
+async def spawnticket_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You lack permissions (Administrator) to use `/spawnticket`.", ephemeral=True)
+
+
+# ==========================================
+# 4. COMMANDS & MODERATION
+# ==========================================
 
 @bot.command(name="quote")
 async def quote_prefix(ctx):
@@ -396,10 +601,6 @@ async def quote_slash(interaction: discord.Interaction):
     quote = await fetch_quote()
     await interaction.response.send_message(quote)
 
-
-# ==========================================
-# 3. MODERATION COMMANDS (/warn, /warnings, /clearwarn, /mute, /unmute, /ban)
-# ==========================================
 
 @bot.tree.command(name="warn", description="Warn a member and log it")
 @app_commands.describe(member="The member to warn", reason="Reason for the warning")
@@ -769,128 +970,14 @@ async def roll(interaction: discord.Interaction, times: int = 1):
     )
 
 
-# --- AUTOMATED CHANNEL PERMISSION LOCKDOWN ---
-
-async def lockdown_log_channels():
-    """
-    Configures channel permissions based on role visibility:
-    - PUBLIC_CHANNEL_ID: Visible to EVERYONE, but READ-ONLY (no messaging/reactions).
-    - STAFF_REPLIES_CHANNEL_ID & MOD_LOG_CHANNEL_ID: Visible ONLY to Admins, READ-ONLY for Admins. Hidden from @everyone.
-    - OWNER & BOT: Full view & send permissions everywhere.
-    """
-    staff_only_channels = [STAFF_REPLIES_CHANNEL_ID, MOD_LOG_CHANNEL_ID]
-    
-    # 1. SETUP PUBLIC CONFESSION CHANNEL (EVERYONE CAN VIEW, READ-ONLY)
-    public_channel = bot.get_channel(PUBLIC_CHANNEL_ID)
-    if public_channel and isinstance(public_channel, discord.TextChannel):
-        guild = public_channel.guild
-        owner = guild.owner
-
-        try:
-            # Everyone can VIEW, but NO ONE can send messages
-            await public_channel.set_permissions(
-                guild.default_role,
-                view_channel=True,         # Visible to everyone
-                send_messages=False,        # Read-only
-                send_messages_in_threads=False,
-                create_public_threads=False,
-                create_private_threads=False,
-                add_reactions=False
-            )
-
-            # Bot full permissions
-            bot_member = guild.get_member(bot.user.id)
-            if bot_member:
-                await public_channel.set_permissions(
-                    bot_member,
-                    view_channel=True,
-                    send_messages=True,
-                    embed_links=True,
-                    attach_files=True
-                )
-
-            # Owner full permissions
-            if owner:
-                await public_channel.set_permissions(
-                    owner,
-                    view_channel=True,
-                    send_messages=True,
-                    embed_links=True,
-                    attach_files=True
-                )
-
-            print(f"✅ Updated PUBLIC channel permissions for #{public_channel.name}")
-        except Exception as e:
-            print(f"Error locking public channel: {e}")
-
-    # 2. SETUP STAFF/MOD LOG CHANNELS (ADMINS ONLY, READ-ONLY)
-    for channel_id in staff_only_channels:
-        channel = bot.get_channel(channel_id)
-        if not channel or not isinstance(channel, discord.TextChannel):
-            continue
-
-        guild = channel.guild
-        owner = guild.owner
-
-        try:
-            # Completely HIDE from @everyone
-            await channel.set_permissions(
-                guild.default_role,
-                view_channel=False,
-                send_messages=False,
-                send_messages_in_threads=False,
-                create_public_threads=False,
-                create_private_threads=False,
-                add_reactions=False
-            )
-
-            # Allow Admins to VIEW, but DENY typing/sending
-            for role in guild.roles:
-                if role.permissions.administrator:
-                    await channel.set_permissions(
-                        role,
-                        view_channel=True,        # Admins can read
-                        send_messages=False,      # Admins cannot send messages
-                        send_messages_in_threads=False,
-                        create_public_threads=False,
-                        create_private_threads=False,
-                        add_reactions=False
-                    )
-
-            # Bot full permissions
-            bot_member = guild.get_member(bot.user.id)
-            if bot_member:
-                await channel.set_permissions(
-                    bot_member,
-                    view_channel=True,
-                    send_messages=True,
-                    embed_links=True,
-                    attach_files=True
-                )
-
-            # Owner full permissions
-            if owner:
-                await channel.set_permissions(
-                    owner,
-                    view_channel=True,
-                    send_messages=True,
-                    embed_links=True,
-                    attach_files=True
-                )
-
-            print(f"🔒 Updated STAFF channel permissions for #{channel.name}")
-        except Exception as e:
-            print(f"Error locking staff channel {channel.id}: {e}")
-
-
 # --- ON_READY EVENT ---
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+    # Register persistent views so buttons remain active across bot restarts
+    bot.add_view(SpawnTicketView())
     
-    # Execute permission lockdown on bot startup
-    await lockdown_log_channels()
+    await bot.tree.sync()
     
     if not auto_post_quote.is_running():
         auto_post_quote.start()
