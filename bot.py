@@ -424,7 +424,186 @@ async def before_auto_post_quote():
 
 
 # ==========================================
-# 3. TICKET SYSTEM IMPLEMENTATION
+# 3. SETUP COMMAND & AUTOMATED CHANNEL CREATION
+# ==========================================
+
+SERVER_STRUCTURE = [
+    {
+        "category": "⟦𝐼𝑀𝒫𝒪𝑅𝒯𝒜𝒩𝒯⟧",
+        "channels": [
+            ("📜-𝑅𝓊𝓁𝑒𝓈", "text"),
+            ("💡-𝒥𝑜𝒾𝓃𝓈", "text"),
+            ("💪-𝒜𝓁𝓁𝒾𝑒𝓈", "forum"),
+            ("📑-𝒢𝒶𝓀𝓊𝓇𝒶𝓃-𝒫𝓇𝒾𝓋𝒶𝓉𝑒-𝒮𝑒𝓇𝓋𝑒𝓇", "text"),
+            ("📋-𝒜𝓉𝓉𝑒𝓃𝒹𝒶𝓃𝒸𝑒", "text"),
+            ("💬-𝓈𝑒𝓇𝓋𝑒𝓇-𝒶𝓃𝒹-𝒾𝓃𝑔𝒶𝓂𝑒-𝓃𝒶𝓂𝑒", "text")
+        ]
+    },
+    {
+        "category": "⚔️ 𝑊𝑎𝑟 𝐸𝑣𝑒𝑛𝑡𝑠",
+        "channels": [
+            ("⚔️-𝑤𝑎𝑟-𝑒𝑣𝑒𝑛𝑡𝑠", "text"),
+            ("🏆-𝑤𝑎𝑟-𝑟𝑒𝑠𝑢𝑙𝑡𝑠", "text"),
+            ("🎉-𝑔𝑒𝑛𝑒𝑟𝑎𝑙-𝑒𝑣𝑒𝑛𝑡𝑠", "text")
+        ]
+    },
+    {
+        "category": "🎫 𝒯𝒾𝒸𝓀𝑒𝓉𝓈",
+        "channels": [
+            ("🔒-𝓉𝓇𝓎-𝑜𝓊𝓉-𝓉𝒾𝒸𝓀𝑒𝓉𝓈", "text")
+        ]
+    },
+    {
+        "category": "🌐 𝒪𝓊𝓉𝓈𝒾𝒹𝑒𝓇 𝒞𝒽𝒶𝓃𝓃𝑒𝓁𝓈",
+        "channels": [
+            ("🤝-𝒶𝓁𝓁𝒾𝑒𝒹-𝒸𝒽𝒶𝓉", "text")
+        ]
+    },
+    {
+        "category": "👑 𝒦𝒶𝓃𝒷𝓊",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "⚡ 𝒮𝒽𝒾𝓀𝒾-𝓀𝒶𝓃",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "🔥 𝒯𝒶𝒾𝒸𝒽ō",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "🗡️ 𝐹𝓊𝓀𝓊𝓉𝒶𝒾𝒸𝒽ō",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "🥇 𝟣𝓈𝓉 𝒟𝒾𝓋𝒾𝓈𝒾𝑜𝓃",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "🥈 𝟤𝓃𝒹 𝒟𝒾𝓋𝒾𝓈𝒾𝑜𝓃",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "🥉 𝟥𝓇𝒹 𝒟𝒾𝓋𝒾𝓈𝒾𝑜𝓃",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "🏅 𝟦𝓉𝒽 𝒟𝒾𝓋𝒾𝓈𝒾𝑜𝓃",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("ℹ️-𝒾𝓃𝒻𝑜𝓇𝓂𝒶𝓉𝒾𝑜𝓃", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "🎖️ 𝟧𝓉𝒽 𝒟𝒾𝓋𝒾𝓈𝒾𝑜𝓃",
+        "channels": [
+            ("🔒-𝒸𝒽𝒶𝓉", "text"),
+            ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
+        ]
+    },
+    {
+        "category": "❪𝒢𝐸𝒩𝐸𝑅𝒜𝐿❫",
+        "channels": [
+            ("📜-𝓆𝓊𝑜𝓉𝑒-𝑜𝒻-𝓉𝒽𝑒-𝒹𝒶𝓎", "text"),
+            ("💬-𝑒𝓃𝑔𝓁𝒾𝓈𝒽-𝒸𝒽𝒶𝓉", "text"),
+            ("📀-𝓂𝑒𝒹𝒾𝒶", "text"),
+            ("🇵🇭-𝓉𝒶𝑔𝒶𝓁𝑜𝑔-𝒸𝒽𝒶𝓉", "text"),
+            ("💌-𝒸𝑜𝓃𝒻𝑒𝓈𝓈-𝓁𝑜𝑔", "text"),
+            ("🎲-𝒻𝓇𝑒𝑒-𝓇𝑒𝓇𝑜𝓁𝓁𝓈-𝑔𝒶𝓀𝓊𝓇𝒶𝓃-𝓈𝓉𝓎𝓁𝑒", "text")
+        ]
+    },
+    {
+        "category": "❲𝒱𝒪𝐼𝒞𝐸 𝒞𝐻𝒜𝒩𝒩𝐸𝐿𝒮❳",
+        "channels": [
+            ("📞-𝒢𝑒𝓃𝑒𝓇𝒶𝓁-𝒱𝑜𝒾𝒸𝑒", "voice"),
+            ("🇵🇭-𝒯𝒶𝑔𝒶𝓁𝑜𝑔-𝒱𝑜𝒾𝒸𝑒", "voice"),
+            ("🎧-𝑀𝓊𝓈𝒾𝒸-𝟣", "voice"),
+            ("🎧-𝑀𝓊𝓈𝒾𝒸-𝟤", "voice"),
+            ("🎧-𝑀𝓊𝓈𝒾𝒸-𝟥", "voice")
+        ]
+    },
+    {
+        "category": "❪𝒜𝒟𝑀𝐼𝒩𝒮❫",
+        "channels": [
+            ("📑-𝓈𝓉𝒶𝒻𝒻𝓈-𝑜𝓃𝓁𝓎", "text"),
+            ("🤖-𝒷𝑜𝓉𝓈", "text")
+        ]
+    },
+    {
+        "category": "🚨 𝑅𝓊𝓁𝑒 𝐵𝓇𝑒𝒶𝓀𝑒𝓇𝓈",
+        "channels": [
+            ("🔒-𝓂𝑜𝒹𝑒𝓇𝒶𝓉𝒾𝑜𝓃", "text")
+        ]
+    },
+    {
+        "category": "🐾 𝒫𝑜𝓀𝑒𝓉𝓌𝑜",
+        "channels": [
+            ("🌿-𝓈𝓅𝒶𝓌𝓃-𝟣", "text"),
+            ("🌿-𝓈𝓅𝒶𝓌𝓃-𝟤", "text"),
+            ("🌿-𝓈𝓅𝒶𝓌𝓃-𝟥", "text"),
+            ("⚔️-𝒷𝒶𝓉𝓉𝓁𝑒", "text")
+        ]
+    }
+]
+
+
+@bot.tree.command(name="setup", description="Wipe all channels and recreate designed structure.")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_server(interaction: discord.Interaction):
+    await interaction.response.send_message("⚠️ Starting server wipe and reconstruction...", ephemeral=True)
+    guild = interaction.guild
+
+    # 1. Delete all existing channels and categories
+    for channel in list(guild.channels):
+        try:
+            await channel.delete(reason="Server setup overhaul")
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
+            pass
+
+    # 2. Build new categories and channels
+    for cat_data in SERVER_STRUCTURE:
+        category = await guild.create_category(name=cat_data["category"])
+        for ch_name, ch_type in cat_data["channels"]:
+            if ch_type == "text":
+                await guild.create_text_channel(name=ch_name, category=category)
+            elif ch_type == "voice":
+                await guild.create_voice_channel(name=ch_name, category=category)
+            elif ch_type == "forum":
+                await guild.create_forum_channel(name=ch_name, category=category)
+
+
+@setup_server.error
+async def setup_server_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You require **Administrator** permissions to use `/setup`.", ephemeral=True)
+
+
+# ==========================================
+# 4. TICKET SYSTEM IMPLEMENTATION
 # ==========================================
 
 async def process_role_assignment(guild: discord.Guild, ticket_owner: discord.Member, division_name: str, evaluator: discord.User, approver: discord.User = None):
@@ -574,7 +753,6 @@ class DivisionSelect(discord.ui.Select):
             self.disabled = True
             
             try:
-                # FIXED: view=self.view instead of view=self fixes AttributeError
                 await interaction.response.edit_message(content=status_msg, view=self.view)
             except discord.NotFound:
                 pass
@@ -582,7 +760,6 @@ class DivisionSelect(discord.ui.Select):
             await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=5))
             
             try:
-                # FIXED: Handles missing message/channel gracefully
                 await interaction.channel.delete(reason=f"Tryout completed by Socho/Kanbu ({interaction.user.name})")
             except discord.NotFound:
                 pass
@@ -778,7 +955,7 @@ async def donetryout(interaction: discord.Interaction):
 
 
 # ==========================================
-# 4. COMMANDS & MODERATION
+# 5. COMMANDS & MODERATION
 # ==========================================
 
 @bot.command(name="quote")
