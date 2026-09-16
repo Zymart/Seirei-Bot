@@ -482,7 +482,7 @@ SERVER_STRUCTURE = [
         ]
     },
     {
-        "category": "🗡️ 𝐹𝓊𝓀𝓊𝓉𝒶𝒾𝒸𝒽ō",
+        "category": "🗡️ 𐐡𝓊𝓀𝓊𝓉𝒶𝒾𝒸𝒽ō",
         "channels": [
             ("🔒-𝒸𝒽𝒶𝓉", "text"),
             ("🔊-𝓋𝑜𝒾𝒸𝑒-𝒸𝒽𝒶𝓉", "voice")
@@ -561,9 +561,9 @@ SERVER_STRUCTURE = [
     {
         "category": "🐾 𝒫𝑜𝓀𝑒𝓉𝓌𝑜",
         "channels": [
-            ("🌿-𝓈𝓅𝒶𝓌𝓃-𝟣", "text"),
+            ("🌿-𝓈𝓅𝒶𝓌𝓌𝓃-𝟣", "text"),
             ("🌿-𝓈𝓅𝒶𝓌𝓃-𝟤", "text"),
-            ("🌿-𝓈𝓅𝒶𝓌𝓃-𝟥", "text"),
+            ("🌿-𝓈𝓅𝒶𝓌𝓃-𝟩", "text"),
             ("⚔️-𝒷𝒶𝓉𝓉𝓁𝑒", "text")
         ]
     }
@@ -573,22 +573,34 @@ SERVER_STRUCTURE = [
 @bot.tree.command(name="setup", description="Wipe all channels and recreate designed structure.")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_server(interaction: discord.Interaction):
-    await interaction.response.send_message("⚠️ Starting server wipe and reconstruction...", ephemeral=True)
+    # Defer initial interaction response to avoid timeout during the wipe process
+    await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # 1. Delete all existing channels and categories safely (Rate Limit Friendly)
-    for channel in list(guild.channels):
+    # Create a copy list of current channels
+    existing_channels = list(guild.channels)
+
+    # 1. Delete standard text/voice/forum channels first
+    for channel in [c for c in existing_channels if not isinstance(c, discord.CategoryChannel)]:
         try:
             await channel.delete(reason="Server setup overhaul")
-            await asyncio.sleep(0.4)  # Small pause to avoid hitting Discord HTTP 429 limits
-        except (discord.Forbidden, discord.HTTPException) as e:
+            await asyncio.sleep(0.6)  # Extended rate-limit guard
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
             print(f"Failed deleting channel {channel.name}: {e}")
 
-    # 2. Build new categories and channels safely
+    # 2. Delete categories second
+    for category in [c for c in existing_channels if isinstance(c, discord.CategoryChannel)]:
+        try:
+            await category.delete(reason="Server setup overhaul")
+            await asyncio.sleep(0.6)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+            print(f"Failed deleting category {category.name}: {e}")
+
+    # 3. Build new categories and channels cleanly
     for cat_data in SERVER_STRUCTURE:
         try:
             category = await guild.create_category(name=cat_data["category"])
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.6)
 
             for ch_name, ch_type in cat_data["channels"]:
                 if ch_type == "text":
@@ -597,9 +609,11 @@ async def setup_server(interaction: discord.Interaction):
                     await guild.create_voice_channel(name=ch_name, category=category)
                 elif ch_type == "forum":
                     await guild.create_forum_channel(name=ch_name, category=category)
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.6)
         except discord.HTTPException as e:
             print(f"Failed creating category {cat_data['category']}: {e}")
+
+    await interaction.followup.send("✅ Server setup successfully completed!", ephemeral=True)
 
 
 @setup_server.error
