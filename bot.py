@@ -570,27 +570,31 @@ SERVER_STRUCTURE = [
 ]
 
 
-# RESILIENT RETRY HELPER FOR API DISCORD ACTIONS
-async def safe_discord_action(coro_func, *args, **kwargs):
-    """Executes a Discord API call with automatic retry on rate limits and errors."""
+# RESILIENT RETRY HELPER FOR API DISCORD ACTIONS WITH REAL-TIME PRINT LOGS
+async def safe_discord_action(action_name: str, coro_func, *args, **kwargs):
+    """Executes a Discord API call with real-time logs and auto-retry on rate limits/errors."""
     while True:
         try:
-            return await coro_func(*args, **kwargs)
+            print(f"[PROGRESS] Attempting: {action_name}...")
+            result = await coro_func(*args, **kwargs)
+            print(f"[SUCCESS] Completed: {action_name}")
+            return result
         except discord.HTTPException as e:
-            if e.status == 429: # Rate limit hit
+            if e.status == 429:  # Rate Limit Encountered
                 retry_after = getattr(e, 'retry_after', 2.0)
-                print(f"[Rate Limited] Waiting {retry_after:.2f}s before retrying...")
+                print(f"[RATE LIMITED] Discord asked to pause for {retry_after:.2f}s on ({action_name}). Retrying soon...")
                 await asyncio.sleep(retry_after + 0.5)
-            elif e.status in (500, 502, 503, 504): # Discord Server Glitches
-                print(f"[Discord Server Error {e.status}] Retrying in 3 seconds...")
+            elif e.status in (500, 502, 503, 504):  # Discord Server Outage
+                print(f"[DISCORD SERVER ERROR {e.status}] Waiting 3s to retry ({action_name})...")
                 await asyncio.sleep(3.0)
             else:
-                print(f"[HTTP Exception {e.status}] Skipped action: {e}")
+                print(f"[HTTP EXCEPTION {e.status}] Skipping failed action ({action_name}): {e}")
                 break
         except discord.NotFound:
+            print(f"[NOT FOUND] Target for ({action_name}) no longer exists. Moving on.")
             break
         except Exception as e:
-            print(f"[Unexpected Error] Retrying action: {e}")
+            print(f"[UNEXPECTED ERROR] ({action_name}): {e}. Retrying in 1s...")
             await asyncio.sleep(1.0)
 
 
@@ -600,38 +604,59 @@ async def setup_server(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
+    print("\n" + "="*50)
+    print(f"🚀 STARTING SERVER SETUP OVERHAUL IN: {guild.name}")
+    print("="*50)
+
     # 1. Fetch current channels as a static list copy
     existing_channels = list(guild.channels)
+    non_category_channels = [c for c in existing_channels if not isinstance(c, discord.CategoryChannel)]
+    categories = [c for c in existing_channels if isinstance(c, discord.CategoryChannel)]
 
-    # Delete standard text/voice/forum channels first
-    for channel in [c for c in existing_channels if not isinstance(c, discord.CategoryChannel)]:
-        await safe_discord_action(channel.delete, reason="Server setup overhaul")
-        await asyncio.sleep(1.2) # Chill delay between deletions
+    # Delete standard channels (Text, Voice, Forum)
+    print(f"\n--- STEP 1: DELETING {len(non_category_channels)} CHANNELS ---")
+    for idx, channel in enumerate(non_category_channels, start=1):
+        action_desc = f"Deleting channel [{idx}/{len(non_category_channels)}]: {channel.name}"
+        await safe_discord_action(action_desc, channel.delete, reason="Server setup overhaul")
+        await asyncio.sleep(0.4)  # Faster, safe delay
 
     # Delete categories second
-    for category in [c for c in existing_channels if isinstance(c, discord.CategoryChannel)]:
-        await safe_discord_action(category.delete, reason="Server setup overhaul")
-        await asyncio.sleep(1.2) # Chill delay between category deletions
+    print(f"\n--- STEP 2: DELETING {len(categories)} CATEGORIES ---")
+    for idx, category in enumerate(categories, start=1):
+        action_desc = f"Deleting category [{idx}/{len(categories)}]: {category.name}"
+        await safe_discord_action(action_desc, category.delete, reason="Server setup overhaul")
+        await asyncio.sleep(0.4)
 
-    # 2. Build new structure cleanly with persistent retries
-    for cat_data in SERVER_STRUCTURE:
-        category = await safe_discord_action(guild.create_category, name=cat_data["category"])
-        await asyncio.sleep(1.2)
+    # 2. Rebuild structure step-by-step
+    total_categories = len(SERVER_STRUCTURE)
+    print(f"\n--- STEP 3: CREATING NEW STRUCTURE ({total_categories} CATEGORIES) ---")
+
+    for cat_idx, cat_data in enumerate(SERVER_STRUCTURE, start=1):
+        cat_name = cat_data["category"]
+        action_desc = f"Creating Category [{cat_idx}/{total_categories}]: {cat_name}"
+        category = await safe_discord_action(action_desc, guild.create_category, name=cat_name)
+        await asyncio.sleep(0.4)
 
         if not category:
+            print(f"⚠️ Failed to create category {cat_name}. Skipping its channels.")
             continue
 
         for ch_name, ch_type in cat_data["channels"]:
+            ch_desc = f"  -> Creating {ch_type} channel: {ch_name} (in {cat_name})"
             if ch_type == "text":
-                await safe_discord_action(guild.create_text_channel, name=ch_name, category=category)
+                await safe_discord_action(ch_desc, guild.create_text_channel, name=ch_name, category=category)
             elif ch_type == "voice":
-                await safe_discord_action(guild.create_voice_channel, name=ch_name, category=category)
+                await safe_discord_action(ch_desc, guild.create_voice_channel, name=ch_name, category=category)
             elif ch_type == "forum":
-                await safe_discord_action(guild.create_forum_channel, name=ch_name, category=category)
+                await safe_discord_action(ch_desc, guild.create_forum_channel, name=ch_name, category=category)
             
-            await asyncio.sleep(1.2) # Chill delay between creations
+            await asyncio.sleep(0.4)
 
-    await interaction.followup.send("✅ Server setup successfully completed!", ephemeral=True)
+    print("\n" + "="*50)
+    print("✅ SERVER SETUP FULLY COMPLETED SUCCESSFULLY!")
+    print("="*50 + "\n")
+
+    await interaction.followup.send("✅ Server setup successfully completed! Check console for full build logs.", ephemeral=True)
 
 
 @setup_server.error
