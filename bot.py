@@ -2,6 +2,7 @@ import os
 import json
 import random
 import threading
+import asyncio
 from datetime import datetime, timezone, timedelta
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -575,25 +576,30 @@ async def setup_server(interaction: discord.Interaction):
     await interaction.response.send_message("⚠️ Starting server wipe and reconstruction...", ephemeral=True)
     guild = interaction.guild
 
-    # 1. Delete all existing channels and categories
+    # 1. Delete all existing channels and categories safely (Rate Limit Friendly)
     for channel in list(guild.channels):
         try:
             await channel.delete(reason="Server setup overhaul")
-        except discord.Forbidden:
-            pass
-        except discord.HTTPException:
-            pass
+            await asyncio.sleep(0.4)  # Small pause to avoid hitting Discord HTTP 429 limits
+        except (discord.Forbidden, discord.HTTPException) as e:
+            print(f"Failed deleting channel {channel.name}: {e}")
 
-    # 2. Build new categories and channels
+    # 2. Build new categories and channels safely
     for cat_data in SERVER_STRUCTURE:
-        category = await guild.create_category(name=cat_data["category"])
-        for ch_name, ch_type in cat_data["channels"]:
-            if ch_type == "text":
-                await guild.create_text_channel(name=ch_name, category=category)
-            elif ch_type == "voice":
-                await guild.create_voice_channel(name=ch_name, category=category)
-            elif ch_type == "forum":
-                await guild.create_forum_channel(name=ch_name, category=category)
+        try:
+            category = await guild.create_category(name=cat_data["category"])
+            await asyncio.sleep(0.5)
+
+            for ch_name, ch_type in cat_data["channels"]:
+                if ch_type == "text":
+                    await guild.create_text_channel(name=ch_name, category=category)
+                elif ch_type == "voice":
+                    await guild.create_voice_channel(name=ch_name, category=category)
+                elif ch_type == "forum":
+                    await guild.create_forum_channel(name=ch_name, category=category)
+                await asyncio.sleep(0.4)
+        except discord.HTTPException as e:
+            print(f"Failed creating category {cat_data['category']}: {e}")
 
 
 @setup_server.error
