@@ -542,11 +542,11 @@ SERVER_STRUCTURE = [
             ("🇵🇭-𝒯𝒶𝑔𝒶𝓁𝑜𝑔-𝒱𝑜𝒾𝒸𝑒", "voice"),
             ("🎧-𝑀𝓊𝓈𝒾𝒸-𝟣", "voice"),
             ("🎧-𝑀𝓊𝓈𝒾𝒸-𝟤", "voice"),
-            ("🎧-𝑀𝓊𝓈𝒾𝒸-𝟥", "voice")
+            ("🎧-𝑀𝓊𝓈𝒾𝒸-3", "voice")
         ]
     },
     {
-        "category": "❪𝒜𝒟𝑀𝐼𝒩𝒮❫",
+        "category": "❪𝒜𝒟𝑀𝐼𝒩𝓈❫",
         "channels": [
             ("📑-𝓈𝓉𝒶𝒻𝒻𝓈-𝑜𝓃𝓁𝓎", "text"),
             ("🤖-𝒷𝑜𝓉𝓈", "text")
@@ -570,48 +570,66 @@ SERVER_STRUCTURE = [
 ]
 
 
+# RESILIENT RETRY HELPER FOR API DISCORD ACTIONS
+async def safe_discord_action(coro_func, *args, **kwargs):
+    """Executes a Discord API call with automatic retry on rate limits and errors."""
+    while True:
+        try:
+            return await coro_func(*args, **kwargs)
+        except discord.HTTPException as e:
+            if e.status == 429: # Rate limit hit
+                retry_after = getattr(e, 'retry_after', 2.0)
+                print(f"[Rate Limited] Waiting {retry_after:.2f}s before retrying...")
+                await asyncio.sleep(retry_after + 0.5)
+            elif e.status in (500, 502, 503, 504): # Discord Server Glitches
+                print(f"[Discord Server Error {e.status}] Retrying in 3 seconds...")
+                await asyncio.sleep(3.0)
+            else:
+                print(f"[HTTP Exception {e.status}] Skipped action: {e}")
+                break
+        except discord.NotFound:
+            break
+        except Exception as e:
+            print(f"[Unexpected Error] Retrying action: {e}")
+            await asyncio.sleep(1.0)
+
+
 @bot.tree.command(name="setup", description="Wipe all channels and recreate designed structure.")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_server(interaction: discord.Interaction):
-    # Defer initial interaction response to avoid timeout during the wipe process
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # Create a copy list of current channels
+    # 1. Fetch current channels as a static list copy
     existing_channels = list(guild.channels)
 
-    # 1. Delete standard text/voice/forum channels first
+    # Delete standard text/voice/forum channels first
     for channel in [c for c in existing_channels if not isinstance(c, discord.CategoryChannel)]:
-        try:
-            await channel.delete(reason="Server setup overhaul")
-            await asyncio.sleep(0.6)  # Extended rate-limit guard
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-            print(f"Failed deleting channel {channel.name}: {e}")
+        await safe_discord_action(channel.delete, reason="Server setup overhaul")
+        await asyncio.sleep(1.2) # Chill delay between deletions
 
-    # 2. Delete categories second
+    # Delete categories second
     for category in [c for c in existing_channels if isinstance(c, discord.CategoryChannel)]:
-        try:
-            await category.delete(reason="Server setup overhaul")
-            await asyncio.sleep(0.6)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-            print(f"Failed deleting category {category.name}: {e}")
+        await safe_discord_action(category.delete, reason="Server setup overhaul")
+        await asyncio.sleep(1.2) # Chill delay between category deletions
 
-    # 3. Build new categories and channels cleanly
+    # 2. Build new structure cleanly with persistent retries
     for cat_data in SERVER_STRUCTURE:
-        try:
-            category = await guild.create_category(name=cat_data["category"])
-            await asyncio.sleep(0.6)
+        category = await safe_discord_action(guild.create_category, name=cat_data["category"])
+        await asyncio.sleep(1.2)
 
-            for ch_name, ch_type in cat_data["channels"]:
-                if ch_type == "text":
-                    await guild.create_text_channel(name=ch_name, category=category)
-                elif ch_type == "voice":
-                    await guild.create_voice_channel(name=ch_name, category=category)
-                elif ch_type == "forum":
-                    await guild.create_forum_channel(name=ch_name, category=category)
-                await asyncio.sleep(0.6)
-        except discord.HTTPException as e:
-            print(f"Failed creating category {cat_data['category']}: {e}")
+        if not category:
+            continue
+
+        for ch_name, ch_type in cat_data["channels"]:
+            if ch_type == "text":
+                await safe_discord_action(guild.create_text_channel, name=ch_name, category=category)
+            elif ch_type == "voice":
+                await safe_discord_action(guild.create_voice_channel, name=ch_name, category=category)
+            elif ch_type == "forum":
+                await safe_discord_action(guild.create_forum_channel, name=ch_name, category=category)
+            
+            await asyncio.sleep(1.2) # Chill delay between creations
 
     await interaction.followup.send("✅ Server setup successfully completed!", ephemeral=True)
 
